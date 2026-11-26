@@ -190,8 +190,8 @@ pub struct AppApi {
     frames: Arc<FrameStore>,
     /// Orders "queue an export" against "restart the app": see [`AppApi::begin_restart`].
     lifecycle: Mutex<Lifecycle>,
-    /// The Reference Grade fits that run, by photo and node, so that `cancel_fit` can stop one (`docs/34` section 9.5).
-    fits: Mutex<std::collections::HashMap<(u32, u32), CancelToken>>,
+    /// The Reference Grade fits that run.
+    fits: FitRegistry,
 }
 
 /// Where the application is in its life, for [`AppApi::begin_restart`].
@@ -216,11 +216,43 @@ fn fit_failure_error(e: ym_core::reference_fit::FitFailure) -> AppError {
     }
 }
 
-/// The running fits, whatever happened to the lock.
-fn lock_fits(
-    fits: &Mutex<std::collections::HashMap<(u32, u32), CancelToken>>,
-) -> std::sync::MutexGuard<'_, std::collections::HashMap<(u32, u32), CancelToken>> {
-    fits.lock().unwrap_or_else(PoisonError::into_inner)
+/// The Reference Grade fits that run, by photo and node, so that `cancel_fit` can stop one (`docs/34` section 9.5). Each fit has an id: a fit takes
+/// its own entry out when it ends and no other, so a second fit that started on the same node meanwhile (and replaced the first one's entry) is
+/// still reachable by `cancel_fit` when the first ends.
+#[derive(Default)]
+pub(crate) struct FitRegistry {
+    running: Mutex<std::collections::HashMap<(u32, u32), (u64, CancelToken)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl FitRegistry {
+    fn map(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<(u32, u32), (u64, CancelToken)>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Registers a fit of the node and answers its id.
+    pub(crate) fn start(&self, photo: u32, node: u32, token: &CancelToken) -> u64 {
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.map().insert((photo, node), (id, token.clone()));
+        id
+    }
+
+    /// Takes the fit `id` out, unless another fit of the node has replaced its entry.
+    pub(crate) fn finish(&self, photo: u32, node: u32, id: u64) {
+        let mut map = self.map();
+        if map.get(&(photo, node)).is_some_and(|(held, _)| *held == id) {
+            map.remove(&(photo, node));
+        }
+    }
+
+    /// Cancels the node's newest fit; nothing happens when none runs.
+    pub(crate) fn cancel(&self, photo: u32, node: u32) {
+        if let Some((_, token)) = self.map().get(&(photo, node)) {
+            token.cancel();
+        }
+    }
 }
 
 /// The `AppError` for a session command that failed.
@@ -541,7 +573,7 @@ impl AppApi {
             home: config.home.or_else(ym_export::naming::home_dir),
             frames,
             lifecycle: Mutex::new(Lifecycle::Running),
-            fits: Mutex::new(std::collections::HashMap::new()),
+            fits: FitRegistry::default(),
         }))
     }
 
@@ -1522,7 +1554,7 @@ impl AppApi {
     pub fn fit_reference(&self, photo: PhotoId, node: u32) -> Result<FitReport, AppError> {
         use ym_core::reference_fit::{FitEvent, FitFailure};
         let token = CancelToken::new();
-        lock_fits(&self.fits).insert((photo.0, node), token.clone());
+        let id = self.fits.start(photo.0, node, &token);
         let emitter = Arc::clone(&self.emitter);
         let mut last = 0.0_f64;
         let mut progress = |event: FitEvent| {
@@ -1549,7 +1581,7 @@ impl AppApi {
         let result = self
             .core
             .reference_fit(core_id(photo), node, &token, &mut progress);
-        lock_fits(&self.fits).remove(&(photo.0, node));
+        self.fits.finish(photo.0, node, id);
         let settings_now = || self.get_settings(photo);
         match result {
             Ok(outcome) => {
@@ -1592,9 +1624,7 @@ impl AppApi {
 
     /// `cancel_fit(photo_id, node_id)`: stops the node's fit between candidates. Nothing happens when none runs.
     pub fn cancel_fit(&self, photo: PhotoId, node: u32) {
-        if let Some(token) = lock_fits(&self.fits).get(&(photo.0, node)) {
-            token.cancel();
-        }
+        self.fits.cancel(photo.0, node);
     }
 
     /// `clear_reference(photo_id, node_id)`: lets go of the node's reference. Returns whether there was one.

@@ -4268,13 +4268,24 @@ export class AppStore {
     if (photo === null || !this.referenceNode(photo, node) || this.state.references[cardKey(photo, node)]?.fit) return;
     this.setCard(photo, node, (card) => ({ ...card, fit: { step: "scene" }, error: null }));
     await this.whenIdle(photo);
-    const before = this.state.settings[photo]?.settings;
+    // The fit is made under the Output's look as it is now: a look that changes while it runs makes the fit stale at once (`docs/34` §2.2).
+    const started = this.state.settings[photo];
+    if (!started) {
+      this.setCard(photo, node, (card) => ({ ...card, fit: null }));
+      return;
+    }
+    const startLook = lookKey(started.settings);
     try {
       const report = await this.api.fitReference(photo, node);
       if (report.status === "cancelled") {
         this.setCard(photo, node, (card) => ({ ...card, fit: null }));
         return;
       }
+      // A fit takes seconds and the panel stays live: Strength, a trim or another node may have changed meanwhile, each with its own undo step. The step of the
+      // fit is the difference between the settings the page holds when the result lands (patches on their way included) and the result, so it holds only
+      // what the fit wrote.
+      await this.whenIdle(photo);
+      const before = this.state.settings[photo]?.settings;
       if (before) {
         const entry = diffSettings(before, report.settings.settings);
         if (entry) this.historyOf(photo).push(entry);
@@ -4287,7 +4298,7 @@ export class AppStore {
         sceneMissing: false,
         result: {
           status: report.status === "already_close" ? "already_close" : "fitted",
-          look: lookKey(report.settings.settings),
+          look: startLook,
           fitted: item?.kind === "reference_grade" ? fittedKey(item) : "",
           notes: report.notes,
           shares: report.shares,

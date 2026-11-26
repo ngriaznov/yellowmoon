@@ -7226,3 +7226,27 @@ fn a_fit_reports_its_steps_writes_one_patch_and_a_cancel_changes_nothing() {
     let fractions: Vec<f64> = steps[from..].iter().map(|p| p.fraction.0).collect();
     assert!(fractions.windows(2).all(|w| w[0] <= w[1]), "{fractions:?}");
 }
+
+#[test]
+fn a_fit_that_ends_leaves_the_entry_of_a_newer_fit_of_the_same_node_so_it_can_still_be_cancelled() {
+    let registry = FitRegistry::default();
+    let (first, second) = (CancelToken::new(), CancelToken::new());
+    let one = registry.start(4, 2, &first);
+    let two = registry.start(4, 2, &second);
+    assert_ne!(one, two);
+    // The first fit ends: it takes out its own entry, which the second has replaced, so nothing is removed.
+    registry.finish(4, 2, one);
+    registry.cancel(4, 2);
+    assert!(second.is_cancelled() && !first.is_cancelled());
+    // The second ends: now the node has none, and a cancel is nothing.
+    registry.finish(4, 2, two);
+    let third = CancelToken::new();
+    registry.cancel(4, 2);
+    assert!(!third.is_cancelled());
+    // A different node is its own.
+    let other = CancelToken::new();
+    let id = registry.start(4, 3, &other);
+    registry.cancel(4, 2);
+    assert!(!other.is_cancelled());
+    registry.finish(4, 3, id);
+}
