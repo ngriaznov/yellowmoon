@@ -121,6 +121,61 @@ enum Cmd {
         #[arg(long)]
         data: Option<PathBuf>,
     },
+    /// Scores the proof of concept's solutions of some pairs and the product's own fit of them under the product's objective, term by term
+    /// (`docs/34` section 16.10; the scene is the proof of concept's).
+    Diagnose {
+        /// The local `split.json`.
+        #[arg(long)]
+        split: PathBuf,
+        /// The folder of reference stills.
+        #[arg(long)]
+        references: PathBuf,
+        /// The folder of the references' label maps.
+        #[arg(long)]
+        reference_labels: PathBuf,
+        /// The proof of concept's records of the pairs (with `x` and `objective`).
+        #[arg(long)]
+        solutions: PathBuf,
+        /// Where `diagnose.json` goes.
+        #[arg(long)]
+        out: PathBuf,
+        /// The `data/` folder.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Threads.
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Compares the proof of concept's pictures of the same numbers with the product's, stage by stage (`docs/34` section 16.10).
+    Stages {
+        /// The local `split.json`.
+        #[arg(long)]
+        split: PathBuf,
+        /// The folder of reference stills.
+        #[arg(long)]
+        references: PathBuf,
+        /// The folder of the references' label maps.
+        #[arg(long)]
+        reference_labels: PathBuf,
+        /// The proof of concept's dumps.
+        #[arg(long)]
+        poc_dir: PathBuf,
+        /// The proof of concept's records of the pairs.
+        #[arg(long)]
+        solutions: PathBuf,
+        /// A pair, `photo:reference` (repeat).
+        #[arg(long)]
+        pair: Vec<String>,
+        /// Where `stages.json` goes.
+        #[arg(long)]
+        out: PathBuf,
+        /// The `data/` folder.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Threads.
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
     /// Prints the seeded sample of held-out photos that go to the owner (the numbers on the held-out set stay aggregate).
     Sample {
         /// The local `split.json`.
@@ -235,6 +290,64 @@ fn main() -> Result<()> {
             audit: false,
             scene: SceneMode::Product,
             reference_labels: None,
+        }),
+        Cmd::Diagnose {
+            split,
+            references,
+            reference_labels,
+            solutions,
+            out,
+            data,
+            threads,
+        } => refgrade_eval::diagnose::diagnose(&refgrade_eval::diagnose::DiagOpts {
+            run: RunOpts {
+                split,
+                set: "dev".into(),
+                references,
+                out,
+                shard: (0, 1),
+                threads,
+                only: Vec::new(),
+                max_photos: None,
+                data,
+                resume: false,
+                mask_check: false,
+                audit: false,
+                scene: SceneMode::PocLabels,
+                reference_labels: Some(reference_labels),
+            },
+            solutions,
+        }),
+        Cmd::Stages {
+            split,
+            references,
+            reference_labels,
+            poc_dir,
+            solutions,
+            pair,
+            out,
+            data,
+            threads,
+        } => refgrade_eval::stages::stages(&refgrade_eval::stages::StageOpts {
+            run: RunOpts {
+                split,
+                set: "dev".into(),
+                references,
+                out,
+                shard: (0, 1),
+                threads,
+                only: Vec::new(),
+                max_photos: None,
+                data,
+                resume: false,
+                mask_check: false,
+                audit: false,
+                scene: SceneMode::PocLabels,
+                reference_labels: Some(reference_labels),
+            },
+            poc_dir,
+            pairs: pair,
+            solutions,
         }),
         Cmd::Sample { split } => {
             for name in owner_sample(&read_split(&split)?) {

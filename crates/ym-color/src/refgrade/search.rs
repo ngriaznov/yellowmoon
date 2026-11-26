@@ -522,6 +522,34 @@ pub fn fit(
     Ok(result)
 }
 
+/// The full objective of the numbers `x` and its terms, as the search scores a candidate (for the evaluation tool, which scores a solution
+/// that was made elsewhere under this objective). A candidate the chain refuses has the refused clip term.
+///
+/// # Errors
+///
+/// [`FitError::ChainRefused`] when the photo cannot be rendered at the identity.
+pub fn score(
+    setup: &FitSetup<'_>,
+    renderer: &mut dyn CandidateRenderer,
+    x: &Params,
+) -> Result<(f64, Terms), FitError> {
+    let n = renderer.sample_len();
+    let mut ev = Evaluator {
+        renderer,
+        setup,
+        look_only: false,
+        evals: 0,
+        buf: vec![Px::default(); n],
+        cancel: &|| false,
+        progress: &mut |_| {},
+        search: 1,
+    };
+    if ev.renderer.render(&[0.0; N_PARAMS], &mut ev.buf).is_err() {
+        return Err(FitError::ChainRefused);
+    }
+    ev.objective(x)
+}
+
 /// The element names in the order of the local numbers and the need test.
 pub const LOCAL_NAMES: [&str; 7] = [
     ELEMENT_NAMES[0],

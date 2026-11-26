@@ -9,10 +9,13 @@
 //! * [`split`] the local `split.json` and the seeded sample for the owner;
 //! * [`run`] the fit loop, shards, resume, and the element-mask check against labels;
 //! * [`report`] the records, their summaries and the merge of shards;
-//! * [`compare`] two runs under the three rules.
+//! * [`compare`] two runs under the three rules;
+//! * [`diagnose`] the objective of a solution made elsewhere against the fit's own, term by term (`docs/34` section 16.10).
 
 pub mod compare;
+pub mod diagnose;
 pub mod measure;
 pub mod report;
 pub mod run;
 pub mod split;
+pub mod stages;

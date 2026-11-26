@@ -108,7 +108,7 @@ impl SceneMode {
 
 /// The reference's label map (`<dir>/labels/<folder of the still>__<stem>.png`, the folder after the still's symlinks are followed) and
 /// the bars the product's loader cuts off the still.
-fn reference_labels(dir: &Path, still: &Path) -> Result<EvalLabels> {
+pub(crate) fn reference_labels(dir: &Path, still: &Path) -> Result<EvalLabels> {
     let real = fs::canonicalize(still).unwrap_or_else(|_| still.to_path_buf());
     let group = real
         .parent()
@@ -157,7 +157,7 @@ pub fn selected(opts: &RunOpts) -> Result<Vec<SplitEntry>> {
 }
 
 /// The photo's settings with a Reference Grade node (id 2) after Main, reading Main and read by the Output.
-fn with_node(base: &DevelopSettings) -> Result<DevelopSettings> {
+pub(crate) fn with_node(base: &DevelopSettings) -> Result<DevelopSettings> {
     let mut doc = serde_json::to_value(base)?;
     doc["nodes"] = json!({ "items": [ { "id": 1 }, { "id": NODE, "kind": "reference_grade", "pos": [2, 0.0] } ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
@@ -170,8 +170,44 @@ fn with_node(base: &DevelopSettings) -> Result<DevelopSettings> {
         .0)
 }
 
+/// The photo's settings with a Reference Grade node (id 2) inserted between Main and the Output, **keeping every other node as the photo has it**
+/// (the Input's, Main's and the Output's own settings, the Output's look included). The diagnosis of `docs/34` section 16.10 uses it to show
+/// what [`with_node`] drops; [`with_node`] itself is left as the RG-10 run used it.
+pub(crate) fn with_node_keeping(base: &DevelopSettings) -> Result<DevelopSettings> {
+    let mut doc = serde_json::to_value(base)?;
+    let items = doc["nodes"]["items"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("no nodes"))?;
+    let out_pos = items
+        .iter()
+        .position(|n| n["id"] == "output")
+        .ok_or_else(|| anyhow!("no output node"))?;
+    let out_x = items[out_pos]["pos"][0].as_f64().unwrap_or(2.0) + 1.0;
+    items[out_pos]["pos"] = json!([out_x, 0.0]);
+    items.insert(
+        out_pos,
+        json!({ "id": NODE, "kind": "reference_grade", "pos": [out_x - 1.0, 0.0] }),
+    );
+    let links = doc["nodes"]["links"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("no links"))?;
+    for l in links.iter_mut() {
+        if l["to"]["node"] == "output" {
+            l["to"]["node"] = json!(NODE);
+        }
+    }
+    links.push(
+        json!({ "from": { "node": NODE, "port": "picture" }, "to": { "node": "output", "port": "picture" } }),
+    );
+    let settings: DevelopSettings = serde_json::from_value(doc)?;
+    Ok(settings
+        .validated()
+        .map_err(|e| anyhow!("the graph is not valid: {e:?}"))?
+        .0)
+}
+
 /// Opens the core of a run: the data folder, a private app folder, `threads` threads, no thumbnails.
-fn open_core(opts: &RunOpts, app: &Path) -> Result<Core> {
+pub(crate) fn open_core(opts: &RunOpts, app: &Path) -> Result<Core> {
     let data = match &opts.data {
         Some(d) => d.clone(),
         None => ym_core::data_dir::find_data_dir()?,
@@ -184,7 +220,7 @@ fn open_core(opts: &RunOpts, app: &Path) -> Result<Core> {
 }
 
 /// Opens one photo and waits for it to develop.
-fn open_photo(core: &Core, raw: &Path) -> Result<PhotoId> {
+pub(crate) fn open_photo(core: &Core, raw: &Path) -> Result<PhotoId> {
     let out = core
         .session
         .open(&[raw.to_path_buf()], OpenOptions::default());
