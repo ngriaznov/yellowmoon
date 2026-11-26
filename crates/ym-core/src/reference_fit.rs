@@ -7,6 +7,8 @@
 //!   photo's chain and runs the node, every per-pixel step after it, the Output's look, C12 and C13 on the 8192 sample pixels
 //!   (their state at the node's input was made once, `Renderer::reference_fit_photo`), split in fixed chunks of 256 whatever the
 //!   thread count. Every statistic is reduced afterwards, in pixel order, by the fit: **the same bits on one thread and on many**.
+//!   The fit makes two of them, one for each of its two independent searches, and runs the searches side by side
+//!   (`ym_color::refgrade::search::fit_parallel`, RG-11): the result is the one the searches give one after the other.
 //! * [`Core::reference_choose_file`] and [`Core::reference_choose_photo`] choose a reference; the core **holds it per node for the
 //!   session** (`docs/34` section 3.7: never saved, never written) and drops it with the node, the photo or the app.
 //! * [`Core::reference_fit`] runs the fit for a node and writes its result as **one patch** of the node's fitted fields
@@ -97,7 +99,8 @@ pub fn apply_numbers(node: &mut ReferenceGradeNode, n: &Numbers) {
     };
 }
 
-/// The chain's candidate renderer (`docs/34` section 2.2).
+/// The chain's candidate renderer (`docs/34` section 2.2). It holds its own copy of the photo's chain (a candidate replaces the node
+/// in it), so each of the fit's two side-by-side searches has one of its own over the same [`FitPhoto`].
 pub struct ChainCandidates<'a> {
     photo: &'a FitPhoto,
     chain: ColorChain,

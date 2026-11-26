@@ -29,11 +29,17 @@ const HEIGHT: u32 = 420;
 /// A fake scene with no skin: sky above, vegetation and built surfaces in the middle, ground below with a patch of water, and a
 /// subject disc in the centre. (A synthetic patchwork has no skin tones, which the skin walls would rightly object to.)
 fn scene_without_skin() -> Arc<SceneModel> {
+    counting_scene_without_skin(Arc::new(std::sync::atomic::AtomicUsize::new(0)))
+}
+
+/// [`scene_without_skin`], counting how many pictures it was asked to segment.
+fn counting_scene_without_skin(calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<SceneModel> {
     use ym_ml::scene::{BUILT, GROUND, SKY, SUBJECT, VEGETATION, WATER};
     SceneModel::fake(
         "no skin",
         false,
-        Arc::new(|w, h, _rgb, _| {
+        Arc::new(move |w, h, _rgb, _| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut bits = vec![0u8; w * h];
             for y in 0..h {
                 for x in 0..w {
@@ -67,6 +73,11 @@ struct Rig {
 
 /// A core with `n` synthetic photos open and the fake scene model.
 fn rig(n: usize) -> Rig {
+    rig_with(n, scene_without_skin())
+}
+
+/// [`rig`] with the scene model given.
+fn rig_with(n: usize, model: Arc<SceneModel>) -> Rig {
     let app = tempfile::tempdir().expect("app root");
     let folder = tempfile::tempdir().expect("photos");
     for k in 0..n {
@@ -82,7 +93,7 @@ fn rig(n: usize) -> Rig {
         scene.write(folder.path(), &format!("DSC{:05}.ARW", k + 1), MODEL);
     }
     let mut options = CoreOptions::new(data_root(), app.path().to_path_buf());
-    options.render.scene_model = Some(scene_without_skin());
+    options.render.scene_model = Some(model);
     options.render.data_root = Some(data_root());
     options.decode_threads = 2;
     options.thumbnails = false;
@@ -817,3 +828,41 @@ const PINNED_FITS: [u64; 4] = [
     0x30c7_6e01_a349_b55a,
     0x9563_285a_8f7c_360f,
 ];
+
+/// The scenes are made once per photo and once per reference, and kept for the next fit (`docs/34` sections 4b.1 and 5.7, RG-11): a
+/// second fit of the same photo to the same reference asks the segmenter for nothing; a new reference is segmented once, and the
+/// photo is not segmented again.
+#[test]
+fn the_scene_is_made_once_per_photo_and_once_per_reference() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let r = rig_with(2, counting_scene_without_skin(Arc::clone(&calls)));
+    r.add_node(0, json!({}));
+    let first = r.file_of("first.png", &r.picture(1));
+    let second = r.file_of("second.png", &r.picture(0));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &first, None)
+        .unwrap();
+    let start = calls.load(SeqCst);
+    let fit = |label: &str| {
+        let out = fit_with(&r, 0, 2).expect(label);
+        r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+        calls.load(SeqCst)
+    };
+    // The first fit makes the photo's scene (unless the background has) and the reference's.
+    let after_first = fit("a first fit");
+    assert!(after_first > start, "the first fit segments the reference");
+    // The second fit to the same held reference makes neither.
+    assert_eq!(
+        fit("a second fit"),
+        after_first,
+        "a second fit to the same reference"
+    );
+    // Another reference: its scene is made, once; the photo's is kept.
+    r.core
+        .reference_choose_file(r.ids[0], 2, &second, None)
+        .unwrap();
+    let after_new = fit("a fit to a new reference");
+    assert_eq!(after_new, after_first + 1, "one new picture to segment");
+    assert_eq!(fit("and again"), after_new);
+}
