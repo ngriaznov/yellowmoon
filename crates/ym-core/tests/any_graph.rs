@@ -4162,3 +4162,209 @@ fn the_unstable_view_rule_exempts_only_the_cpus_own_unstable_values() {
         "no pinned graph has a view value that moves by 3 codes"
     );
 }
+
+// ---- DIAGNOSTIC ONLY (branch diag-any-graph-609): where the device departs from the CPU on seed 609 graph 1. Not for merging. ----
+
+const DIAG_609: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"layer","mode":"subtract","opacity":1.0,"pos":[2,0.0]},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":3},"halation":{"amount":200,"size":120},"id":3,"kind":"film","pos":[3,0.0],"strength":85},{"id":4,"kind":"combiner","pos":[4,0.0]},{"id":5,"kind":"layer","mode":"difference","opacity":1.0,"pos":[5,0.0]}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture.1"}},{"from":{"node":"input","port":"picture"},"to":{"node":2,"port":"picture.2"}},{"from":{"node":"input","port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":3,"port":"picture"},"to":{"node":4,"port":"red"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture.1"}},{"from":{"node":1,"port":"picture"},"to":{"node":5,"port":"picture.2"}},{"from":{"node":2,"port":"picture"},"to":{"node":5,"port":"picture.3"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}"#;
+
+fn diag_link(from: Value, fp: &str, to: u64, tp: &str) -> Value {
+    json!({"from": {"node": from, "port": fp}, "to": {"node": to, "port": tp}})
+}
+
+fn diag_out(from: u64, fp: &str) -> Value {
+    json!({"from": {"node": from, "port": fp}, "to": {"node": "output", "port": "picture"}})
+}
+
+fn diag_valid(v: &Value) -> Option<(DevelopSettings,)> {
+    let valid = serde_json::from_value::<DevelopSettings>(v.clone()).ok()?.validated().ok()?;
+    Some((valid.0,))
+}
+
+fn diag_stats(name: &str, what: &str, a: &[u32], b: &[u32]) {
+    let mut per = [(0u32, 0usize, 0usize); 3];
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        let d = x.abs_diff(*y);
+        let p = &mut per[i % 3];
+        if d > p.0 {
+            p.0 = d;
+            p.2 = i;
+        }
+        if d > TEN_BIT_CODE {
+            p.1 += 1;
+        }
+    }
+    say(&format!(
+        "DIAG {name} {what}: ch0 max {} (n>64 {}, at {}), ch1 max {} (n>64 {}, at {}), ch2 max {} (n>64 {}, at {})",
+        per[0].0, per[0].1, per[0].2, per[1].0, per[1].1, per[1].2, per[2].0, per[2].1, per[2].2
+    ));
+}
+
+#[test]
+fn diag609_stages() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let full: Value = serde_json::from_str(DIAG_609).expect("json");
+    let items = full["nodes"]["items"].as_array().expect("items").clone();
+    let (main, layer2, film3, comb4, layer5) = (
+        items[0].clone(),
+        items[1].clone(),
+        items[2].clone(),
+        items[3].clone(),
+        items[4].clone(),
+    );
+    let inp = || json!("input");
+    let mut variants: Vec<(String, Value)> = vec![("full".into(), full.clone())];
+    for (tag, ptr, val) in [
+        ("film strength 0", "/nodes/items/2/strength", json!(0)),
+        ("grain 0", "/nodes/items/2/grain/amount", json!(0)),
+        ("halation 0", "/nodes/items/2/halation/amount", json!(0)),
+    ] {
+        let mut v = full.clone();
+        if let Some(t) = v.pointer_mut(ptr) {
+            *t = val;
+        }
+        variants.push((tag.into(), v));
+    }
+    let doc = |items: Vec<Value>, links: Vec<Value>| json!({"nodes": {"items": items, "links": links}});
+    variants.push((
+        "film only".into(),
+        doc(
+            vec![main.clone(), film3.clone()],
+            vec![diag_link(inp(), "picture", 1, "picture"), diag_link(inp(), "picture", 3, "picture"), diag_out(3, "picture")],
+        ),
+    ));
+    variants.push((
+        "film into combiner.red".into(),
+        doc(
+            vec![main.clone(), film3.clone(), comb4.clone()],
+            vec![
+                diag_link(inp(), "picture", 1, "picture"),
+                diag_link(inp(), "picture", 3, "picture"),
+                diag_link(json!(3), "picture", 4, "red"),
+                diag_out(4, "picture"),
+            ],
+        ),
+    ));
+    variants.push((
+        "combiner difference main (no subtract layer)".into(),
+        doc(
+            vec![main.clone(), film3.clone(), comb4.clone(), layer5.clone()],
+            vec![
+                diag_link(inp(), "picture", 1, "picture"),
+                diag_link(inp(), "picture", 3, "picture"),
+                diag_link(json!(3), "picture", 4, "red"),
+                diag_link(json!(4), "picture", 5, "picture.1"),
+                diag_link(json!(1), "picture", 5, "picture.2"),
+                diag_out(5, "picture"),
+            ],
+        ),
+    ));
+    variants.push((
+        "no film: input difference main, difference subtract".into(),
+        doc(
+            vec![main.clone(), layer2.clone(), layer5.clone()],
+            vec![
+                diag_link(inp(), "picture", 1, "picture"),
+                diag_link(json!(1), "picture", 2, "picture.1"),
+                diag_link(inp(), "picture", 2, "picture.2"),
+                diag_link(inp(), "picture", 5, "picture.1"),
+                diag_link(json!(1), "picture", 5, "picture.2"),
+                diag_link(json!(2), "picture", 5, "picture.3"),
+                diag_out(5, "picture"),
+            ],
+        ),
+    ));
+    variants.push((
+        "subtract alone".into(),
+        doc(
+            vec![main.clone(), layer2.clone()],
+            vec![
+                diag_link(inp(), "picture", 1, "picture"),
+                diag_link(json!(1), "picture", 2, "picture.1"),
+                diag_link(inp(), "picture", 2, "picture.2"),
+                diag_out(2, "picture"),
+            ],
+        ),
+    ));
+    let samples = [(212usize, 7usize), (212, 10), (212, 11), (426, 253), (141, 314), (461, 316), (300, 100)];
+    for (name, v) in &variants {
+        let Some(valid) = diag_valid(v) else {
+            say(&format!("DIAG {name}: not a valid document"));
+            continue;
+        };
+        let t = std::time::Instant::now();
+        let dev = decode_png16_bytes(&export(&d, &valid.0, renderer(Some(Arc::clone(&gpu)), 256), home.path(), FormatKind::Png).2);
+        let cpu = decode_png16_bytes(&export(&d, &valid.0, renderer(None, 256), home.path(), FormatKind::Png).2);
+        say(&format!("DIAG {name}: rendered in {:?}", t.elapsed()));
+        diag_stats(name, "device vs CPU", &dev, &cpu);
+        let leaves = nudge_leaves(v);
+        let docs = nudged_documents(v, &leaves);
+        if let Some(nd) = docs.first() {
+            if let Some(cn) = cpu_png_of(&d, nd, home.path(), cpu.len()) {
+                diag_stats(name, &format!("CPU nudged#0 vs CPU ({} leaves)", leaves.len()), &cn, &cpu);
+            }
+            if let Some(vs) = diag_valid(nd) {
+                let dn = decode_png16_bytes(&export(&d, &vs.0, renderer(Some(Arc::clone(&gpu)), 256), home.path(), FormatKind::Png).2);
+                diag_stats(name, "device nudged#0 vs device", &dn, &dev);
+                diag_stats(name, "device nudged#0 vs CPU", &dn, &cpu);
+            }
+        }
+        for (x, y) in samples {
+            let i = (y * 640 + x) * 3;
+            say(&format!(
+                "DIAG {name}: pixel ({x},{y}) cpu {:?} device {:?}",
+                &cpu[i..i + 3],
+                &dev[i..i + 3]
+            ));
+        }
+    }
+}
+
+#[test]
+fn diag609_leaves_one_at_a_time() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let full: Value = serde_json::from_str(DIAG_609).expect("json");
+    let base = cpu_png_of(&d, &full, home.path(), 640 * 420 * 3).expect("base");
+    let leaves = nudge_leaves(&full);
+    for l in &leaves {
+        let mut nudged = full.clone();
+        set_number(&mut nudged, &l.at, l.nudged(1.0));
+        let Some(m) = cpu_png_of(&d, &nudged, home.path(), base.len()) else {
+            say(&format!("DIAG leaf {} = {}: not a valid document", l.at, l.value));
+            continue;
+        };
+        let (mut max, mut n) = (0u32, 0usize);
+        let mut per = [0usize; 3];
+        for (i, (a, b)) in m.iter().zip(&base).enumerate() {
+            let dd = a.abs_diff(*b);
+            max = max.max(dd);
+            if dd > TEN_BIT_CODE {
+                n += 1;
+                per[i % 3] += 1;
+            }
+        }
+        say(&format!(
+            "DIAG leaf {} = {} (step {:e}, to {}): max move {max}, {n} values over 64 (per channel {per:?})",
+            l.at,
+            l.value,
+            l.step,
+            l.nudged(1.0)
+        ));
+    }
+}

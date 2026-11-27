@@ -124,6 +124,7 @@ jobs:
           YM_GPU_LOG: debug
           MTL_DEBUG_LAYER: "1"
           RUST_BACKTRACE: "1"
+          YM_GRAPH_SEED: "609"
           DIAG_TESTS: ${{ inputs.tests }}
           DIAG_FILTER: ${{ inputs.filter }}
         # shell is bash -eo pipefail (defaults.run), so a failing cargo test fails the step through `tee`.
