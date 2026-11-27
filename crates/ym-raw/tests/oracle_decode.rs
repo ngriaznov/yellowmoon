@@ -148,10 +148,10 @@ fn assert_matches_libraw(path: &Path, scratch: &Path) {
     let ordered = |v: [f32; 4]| if ours.is_reduced() { v } else { rggb(&ours, v) };
     let black = ordered(ours.black);
     let white = ordered(ours.white);
-    // LibRaw does not rescale the 14-bit-scale levels of an SR2 block for 12-bit data (it reads
-    // those files as 14-bit); ym-raw does (128 and 4075 instead of 512 and 16300), so the levels
-    // of 12-bit files are not compared. The samples are.
-    let twelve_bit = ours.meta.decode == DecodeKind::Uncompressed12;
+    // LibRaw does not rescale the 14-bit-scale levels of an SR2 block for 12-bit data; ym-raw
+    // does for packed 12-bit (128 and 4075 instead of 512 and 16300), so the levels of packed
+    // files are not compared. 12-bit 16-bit words are on the 14-bit scale and keep their levels.
+    let twelve_bit = ours.meta.decode == DecodeKind::Uncompressed12 && ours.meta.compression != 1;
     if !twelve_bit {
         if let Some(b) = libraw_levels(&meta, "black_level_per_channel") {
             assert_eq!(black, b, "{name}: black level");

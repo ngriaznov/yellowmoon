@@ -43,19 +43,26 @@ fn uncompressed_14_bit_words_come_back_as_written() {
     assert_eq!(raw.wb_as_shot, Some([2043.0, 1024.0, 1024.0, 1755.0]));
 }
 
+/// Real 12-bit uncompressed files (A9, A7S II, A99 II: continuous Hi, electronic shutter) store
+/// the 12-bit values shifted left by two, on the 14-bit scale of their SR2 levels (black 512,
+/// white 15360): the low two bits are zero. The levels must not be shifted down, or the black
+/// is 128 and every sample reads about four times too bright (blown out and magenta).
 #[test]
-fn uncompressed_12_bit_words_come_back_as_written() {
+fn uncompressed_12_bit_words_stay_on_the_14_bit_scale() {
     let (w, h) = (64, 48);
-    let mosaic = gradient_mosaic(w, h, 128, 4000, 2);
+    let mosaic: Vec<u16> = gradient_mosaic(w, h, 128, 4000, 2)
+        .into_iter()
+        .map(|v| v << 2)
+        .collect();
     let file = ArwBuilder::new("ILCE-7RM4", w, h)
         .uncompressed(12)
         .build(&mosaic);
     let raw = must_decode(&file);
     assert_eq!(raw.meta.decode, DecodeKind::Uncompressed12);
     assert_eq!(raw.data.data, mosaic);
-    // 14-bit SR2 levels are shifted to the 12-bit scale of the data.
-    assert_eq!(raw.black, [128.0; 4]);
-    assert_eq!(raw.white, [4075.0; 4]);
+    assert!(raw.data.data.iter().all(|v| v & 3 == 0));
+    assert_eq!(raw.black, [512.0; 4]);
+    assert_eq!(raw.white, [16300.0; 4]);
 }
 
 #[test]
