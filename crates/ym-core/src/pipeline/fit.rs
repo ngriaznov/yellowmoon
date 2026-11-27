@@ -213,7 +213,8 @@ impl Renderer {
         result
     }
 
-    #[cfg_attr(feature = "eval-scene", allow(clippy::too_many_arguments))]
+    // 8 parameters with `base`, 9 with the eval-scene one: they are the fit's inputs, not a bag of options.
+    #[allow(clippy::too_many_arguments)]
     fn fit_photo_on(
         &self,
         src: &PhotoSource,
