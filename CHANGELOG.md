@@ -9,6 +9,20 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.5-beta.1] - 2026-11-27
+
+A first pre-release (a beta) of 0.2.5 for testing. It fixes 12-bit uncompressed ARW files, which 0.2.4 rendered blown out and magenta. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.16.1 (0.2.4 had 0.16.0), because the pixels of those files change; every other photo comes out with the same pixels as in 0.2.4, and settings files, presets and albums are read and written as in 0.2.4.
+
+### Fixed
+
+- **12-bit uncompressed ARW files are no longer blown out and magenta.** Some bodies write 12-bit samples into an uncompressed file (the A9, A7S II and A99 II, in continuous Hi or with the electronic shutter). The samples are written on the 14-bit scale, but the decoder read the black and white levels on the 12-bit scale, so every sample came out about four times too bright and the highlights clipped to magenta. The levels are now read on the samples' own scale. 14-bit uncompressed, compressed (cRAW), lossless and packed 12-bit files are unchanged.
+
+- **A library is updated** (`cookie` 0.18.3, which the app's window library pulls in) for a security advisory against 0.18.2. Nothing changes in how the app works.
+
+### Known limits
+
+- The known limits of 0.2.4 still apply (see its section below).
+
 ## [0.2.4] - 2026-11-22
 
 The stable release that follows six pre-releases (0.2.4-beta.1 to 0.2.4-beta.6), so the app's updater offers it. If you are updating from 0.2.3, this is everything that is new since then. It adds **Face Refinement**, **Colour Uniform** and **Blur** nodes, **presets and albums** and **Mask Intersect**. The pipeline version is 0.16.0 (0.2.3 had 0.11.0), and **most photos look slightly different**, because the constants of the raw processing were re-derived (under Changed); a photo from a Sony NEX-5N or NEX-7, or one with bright lights and Anamorphic above 0, can change more. A settings file, preset or album that uses a new node or option needs this version: an older build refuses it.
