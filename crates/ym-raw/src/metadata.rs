@@ -29,8 +29,8 @@
 //! plain tags 0x7310 / 0x7313 in the raw IFD (newer bodies repeat them there), and finally a
 //! documented default (black 512 for cRAW and 128 shifted by the bit depth otherwise, white
 //! `2^bits - 1`; white balance has no default). [`RawMetadata::black_source`] and friends say
-//! which one was used. Levels are on the scale of the decoded samples: when the data is 12 bits
-//! wide and the SR2 levels are on Sony's 14-bit scale they are shifted down (see
+//! which one was used. Levels are on the scale of the decoded samples: when packed 12-bit data is
+//! stored and the SR2 levels are on Sony's 14-bit scale they are shifted down (see
 //! `sr2::fit_levels`), and cRAW levels stay on the 14-bit scale of the decoder's curve output.
 
 use std::path::Path;
@@ -504,7 +504,7 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         .and_then(|e| four_u16(&tiff, e));
     let levels = resolve_levels(
         decode,
-        best.bits,
+        sample_scale_bits(decode, best.bits, best.compression),
         cfa,
         sr2_data.as_ref(),
         RawIfdLevels {
@@ -1105,6 +1105,21 @@ struct RawIfdLevels {
     wb: Option<[u16; 4]>,
 }
 
+/// The bit depth of the scale the stored samples are on, as the level logic needs it.
+///
+/// `BitsPerSample` is the depth of the camera's data, but the 16-bit words of an uncompressed
+/// file (TIFF compression 1) always sit on Sony's 14-bit scale: a 12-bit mode (continuous Hi,
+/// electronic shutter, bulb) writes its 12-bit values shifted left by two, so the low two bits
+/// are zero, black is 512 and white 15360 or 16380, like in a 14-bit file. Packed 12-bit
+/// (compression 32767) and ARW 1 store the plain 12-bit values.
+fn sample_scale_bits(decode: DecodeKind, bits: u16, compression: u16) -> u16 {
+    if decode == DecodeKind::Uncompressed12 && compression == COMPRESSION_NONE {
+        14
+    } else {
+        bits
+    }
+}
+
 fn resolve_levels(
     decode: DecodeKind,
     bits: u16,
@@ -1608,6 +1623,33 @@ mod tests {
             resolve_levels(DecodeKind::Uncompressed12, 12, cfa, None, wide).expect("levels");
         assert_eq!(fitted.white, [4095.0; 4]);
         assert_eq!(fitted.black, [128.0; 4]);
+    }
+
+    /// 12-bit uncompressed words are on the 14-bit scale: the levels are not shifted, the
+    /// packed 12-bit layout still is.
+    #[test]
+    fn words16_12_bit_keeps_the_14_bit_levels() {
+        let sr2 = sr2::Sr2Data {
+            black: Some([512; 4]),
+            white: Some([15_360; 4]),
+            ..Default::default()
+        };
+        let scale = |compression| {
+            let bits = sample_scale_bits(DecodeKind::Uncompressed12, 12, compression);
+            resolve_levels(
+                DecodeKind::Uncompressed12,
+                bits,
+                CfaPattern::RGGB,
+                Some(&sr2),
+                RawIfdLevels::default(),
+            )
+            .expect("levels")
+        };
+        let words = scale(COMPRESSION_NONE);
+        assert_eq!((words.black[0], words.white[0]), (512.0, 15_360.0));
+        let packed = scale(COMPRESSION_ARW2);
+        assert_eq!((packed.black[0], packed.white[0]), (128.0, 3840.0));
+        assert_eq!(sample_scale_bits(DecodeKind::Uncompressed14, 14, 1), 14);
     }
 
     #[test]

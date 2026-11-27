@@ -2111,9 +2111,11 @@ mod tests {
     }
 
     #[test]
-    fn twelve_bit_data_scales_14_bit_sr2_levels() {
+    fn packed_12_bit_data_scales_14_bit_sr2_levels() {
+        // Packed 12-bit stores plain 12-bit values; 16-bit 12-bit words are on the 14-bit scale
+        // and keep the levels (`decode_roundtrip.rs`).
         let file = ArwBuilder::new("ILCE-7RM4", 32, 32)
-            .uncompressed(12)
+            .container_only(ContainerOnly::packed12())
             .white([16383; 3])
             .build(&gradient_mosaic(32, 32, 128, 4000, 3));
         let meta = probe_bytes(&file).expect("probe");
