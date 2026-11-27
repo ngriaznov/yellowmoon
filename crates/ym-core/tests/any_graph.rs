@@ -4441,3 +4441,106 @@ fn diag609_more() {
         say(&format!("DIAG2 gain temperature {t:e}: cpu red {:?} device red {:?}", at(&cpu), at(&dev)));
     }
 }
+
+/// The residue of a cancellation made visible: the picture a node makes, lifted by three correctors of +3 EV each (512 times).
+#[test]
+fn diag609_lifted() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let full: Value = serde_json::from_str(DIAG_609).expect("json");
+    let items = full["nodes"]["items"].as_array().expect("items").clone();
+    let (main, layer2, film3, comb4, layer5) = (
+        items[0].clone(),
+        items[1].clone(),
+        items[2].clone(),
+        items[3].clone(),
+        items[4].clone(),
+    );
+    let corr = |id: u64| json!({"id": id, "kind": "corrector", "pos": [id, 0.0], "trim": {"exposure_ev": 3.0}});
+    let inp = || json!("input");
+    let lift = |from: u64| {
+        vec![
+            diag_link(json!(from), "picture", 6, "picture"),
+            diag_link(json!(6), "picture", 7, "picture"),
+            diag_link(json!(7), "picture", 8, "picture"),
+            diag_out(8, "picture"),
+        ]
+    };
+    let doc = |items: Vec<Value>, links: Vec<Value>| json!({"nodes": {"items": items, "links": links}});
+    let with_mode = |l: &Value, mode: &str| {
+        let mut l = l.clone();
+        l["mode"] = json!(mode);
+        l
+    };
+    let mut variants: Vec<(String, Value)> = Vec::new();
+    // M - I and I - M, lifted.
+    for (tag, a, b) in [("M - I", json!(1), inp()), ("I - M", inp(), json!(1))] {
+        let mut links = vec![
+            diag_link(inp(), "picture", 1, "picture"),
+            diag_link(a, "picture", 2, "picture.1"),
+            diag_link(b, "picture", 2, "picture.2"),
+        ];
+        links.extend(lift(2));
+        variants.push((
+            format!("lifted {tag}"),
+            doc(vec![main.clone(), layer2.clone(), corr(6), corr(7), corr(8)], links),
+        ));
+    }
+    // P - M, M - P, |P - M|, P - I, |P - I|, lifted.
+    for (tag, mode, p1, p2) in [
+        ("|P - M|", "difference", json!(4), json!(1)),
+        ("P - M", "subtract", json!(4), json!(1)),
+        ("M - P", "subtract", json!(1), json!(4)),
+        ("|P - I|", "difference", json!(4), inp()),
+        ("P - I", "subtract", json!(4), inp()),
+    ] {
+        let mut links = vec![
+            diag_link(inp(), "picture", 1, "picture"),
+            diag_link(inp(), "picture", 3, "picture"),
+            diag_link(json!(3), "picture", 4, "red"),
+            diag_link(p1, "picture", 5, "picture.1"),
+            diag_link(p2, "picture", 5, "picture.2"),
+        ];
+        links.extend(lift(5));
+        variants.push((
+            format!("lifted {tag}"),
+            doc(
+                vec![main.clone(), film3.clone(), comb4.clone(), with_mode(&layer5, mode), corr(6), corr(7), corr(8)],
+                links,
+            ),
+        ));
+    }
+    let samples = [(212usize, 6usize), (212, 7), (212, 8), (212, 9), (212, 10), (212, 11), (212, 12), (211, 10), (213, 10), (426, 253), (141, 314), (461, 316), (100, 100)];
+    for (name, v) in &variants {
+        let Some(valid) = diag_valid(v) else {
+            say(&format!("DIAG3 {name}: not a valid document"));
+            continue;
+        };
+        let dev = decode_png16_bytes(&export(&d, &valid.0, renderer(Some(Arc::clone(&gpu)), 256), home.path(), FormatKind::Png).2);
+        let cpu = decode_png16_bytes(&export(&d, &valid.0, renderer(None, 256), home.path(), FormatKind::Png).2);
+        diag_stats(&format!("DIAG3 {name}"), "device vs CPU", &dev, &cpu);
+        for (x, y) in samples {
+            let i = (y * 640 + x) * 3;
+            say(&format!("DIAG3 {name}: pixel ({x},{y}) cpu {:?} device {:?}", &cpu[i..i + 3], &dev[i..i + 3]));
+        }
+        // How many pixels have a lifted red above 1000 codes, and where the device and the CPU differ most.
+        let n_cpu = cpu.iter().step_by(3).filter(|&&c| c > 1000).count();
+        let n_dev = dev.iter().step_by(3).filter(|&&c| c > 1000).count();
+        let worst = (0..cpu.len()).step_by(3).max_by_key(|&i| cpu[i].abs_diff(dev[i])).unwrap_or(0);
+        say(&format!(
+            "DIAG3 {name}: red over 1000 codes: cpu {n_cpu}, device {n_dev}; worst red at pixel ({}, {}): cpu {} device {}",
+            (worst / 3) % 640,
+            (worst / 3) / 640,
+            cpu[worst],
+            dev[worst]
+        ));
+    }
+}
