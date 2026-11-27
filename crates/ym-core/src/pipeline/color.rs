@@ -353,6 +353,18 @@ pub struct ColorKey(String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GradeKey(String);
 
+impl GradeKey {
+    /// The key of the plan with its mixers reading through `rounding` (a reference option, `RenderOptions::join_rounding`):
+    /// the same key for [`JoinRounding::Exact`], so that a default render's keys do not move.
+    #[must_use]
+    pub fn with_join_rounding(&self, rounding: ym_color::display::JoinRounding) -> Self {
+        if rounding == ym_color::display::JoinRounding::Exact {
+            return self.clone();
+        }
+        Self(format!("{}|join:{rounding:?}", self.0))
+    }
+}
+
 /// The key of the colour group of a photo.
 #[must_use]
 pub fn color_key(src: &PhotoSource) -> ColorKey {

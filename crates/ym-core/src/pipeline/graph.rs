@@ -69,7 +69,7 @@ use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger, Reservation};
 use crate::session::PhotoId;
-use ym_color::display::OutputTarget;
+use ym_color::display::{JoinRounding, OutputTarget};
 use ym_color::plan::Stop as PlanStop;
 
 use crate::settings::MaskShape;
@@ -316,6 +316,10 @@ pub struct RenderOptions {
     /// field, no UI, not part of the cache keys. The reduced renders keep the bilateral denoise of the
     /// binned image whatever it is.
     pub denoise: DenoiseMethod,
+    /// How the CPU's mixers read their inputs: [`JoinRounding::Exact`] by default, and for every product path. A reference
+    /// option for judging a device render (the `any_graph` test, seed 609): each join input rounded to `f32` on its own
+    /// path, as the device carries it. Part of the grade plan's cache key when it is not the default.
+    pub join_rounding: JoinRounding,
 }
 
 /// The method the test-only switch asks for: the value of `YM_FORCE_DEMOSAIC` (a
@@ -404,6 +408,7 @@ impl Default for RenderOptions {
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
             denoise: DEFAULT_DENOISE,
+            join_rounding: JoinRounding::Exact,
         }
     }
 }
@@ -1510,6 +1515,12 @@ impl Renderer {
         self.options().gpu.as_ref().map_or(0, |g| {
             g.scheduler().cancel_navigation(Some(u64::from(left.0)))
         })
+    }
+
+    /// Sets how the CPU's mixers read their inputs ([`RenderOptions::join_rounding`]): a reference option for judging a
+    /// device render, [`JoinRounding::Exact`] for everything else. Plans made under another value are other cache entries.
+    pub fn set_join_rounding(&self, rounding: JoinRounding) {
+        self.update_options(|o| o.join_rounding = rounding);
     }
 
     /// Changes the memory budget: the ledger of full-resolution renders follows at once, graphs
@@ -3834,7 +3845,8 @@ impl<'a> Job<'a> {
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.
-        let wanted = grade_key_to(src, &color, &req, stop);
+        let rounding = self.opts.join_rounding;
+        let wanted = grade_key_to(src, &color, &req, stop).with_join_rounding(rounding);
         let cached = {
             let mut st = lock(&self.g.state);
             let cache = st.grade.get_or_insert_with(|| ByteLru::new(8));
@@ -3848,7 +3860,12 @@ impl<'a> Job<'a> {
             return Ok(plan);
         }
         let t = Instant::now();
-        let plan = Arc::new(grade_plan_to(src, &color, &req, stop)?);
+        let mut plan = grade_plan_to(src, &color, &req, stop)?;
+        if rounding != JoinRounding::Exact {
+            plan.chain = Arc::new((*plan.chain).clone().with_join_rounding(rounding));
+            plan.key = wanted.clone();
+        }
+        let plan = Arc::new(plan);
         self.runs.grade_plans += 1;
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
         for w in &plan.warnings {

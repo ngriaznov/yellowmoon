@@ -43,7 +43,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
-use super::mix::{self, JoinParams, Source};
+use super::mix::{self, JoinParams, JoinRounding, Source};
 use super::node::{FilmStep, MainStages, NodeParams, NodeSet, PreparedNode};
 use super::transform::PreparedDisplay;
 use super::trim::Trim;
@@ -183,6 +183,9 @@ pub struct ChainParams {
     /// a pixel with no plane is 0. `None` is the mask view of the node's own rows. A view of the CPU road only (the device records
     /// do not read it), which is why the viewport never routes such a frame to the device.
     pub element_view: Option<(u32, usize)>,
+    /// How the mixers read their inputs: [`JoinRounding::Exact`] (the default, and every render's) or a reference option for
+    /// judging a device render, which rounds each join input to `f32` on its own path. Never set by a product path.
+    pub join_rounding: JoinRounding,
 }
 
 impl ChainParams {
@@ -230,6 +233,7 @@ impl ChainParams {
             joins: BTreeMap::new(),
             elements: Vec::new(),
             element_view: None,
+            join_rounding: JoinRounding::Exact,
         }
     }
 }
@@ -787,6 +791,14 @@ impl ColorChain {
         Some(self.encode(self.c12(last)))
     }
 
+    /// The chain with its mixers reading their inputs through `rounding` ([`ChainParams::join_rounding`]): a reference option
+    /// for judging a device render, never a product path. [`JoinRounding::Exact`] gives the chain back as it was.
+    #[must_use]
+    pub fn with_join_rounding(mut self, rounding: JoinRounding) -> Self {
+        self.params.join_rounding = rounding;
+        self
+    }
+
     /// Puts new parameters into the step of node `id` (a candidate of a fit): the plan, the look and the display stay as they are.
     ///
     /// # Errors
@@ -867,9 +879,12 @@ impl ColorChain {
                 for (slot, s) in logs.iter_mut().zip(inputs) {
                     *slot = s.logc4;
                 }
-                JoinOut::Picture(mix::parallel(base, &logs[..inputs.len()], |i| {
-                    join.input_is_base(i)
-                }))
+                JoinOut::Picture(mix::parallel_rounded(
+                    base,
+                    &logs[..inputs.len()],
+                    |i| join.input_is_base(i),
+                    self.params.join_rounding,
+                ))
             }
             JoinKind::Layer => {
                 if params.bypass {
@@ -882,11 +897,12 @@ impl ColorChain {
                         KeyRef::Buffer(b) => buffers[usize::from(b)][0],
                     });
                 }
-                JoinOut::Picture(mix::layer(
+                JoinOut::Picture(mix::layer_rounded(
                     params.mode,
                     params.opacity,
                     inputs,
                     &alphas[..inputs.len()],
+                    self.params.join_rounding,
                 ))
             }
             JoinKind::Splitter => JoinOut::Channels(mix::split(inputs[0].logc4)),

@@ -39,7 +39,9 @@
 //! values, the range widened by 2 codes). (The cases that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a thin
 //! dark line that the Output's sharpening amplifies, `a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening`;
 //! and seed 297 graph 0, two chained Colour Uniform nodes whose second has no mask row,
-//! `the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_row`.)
+//! `the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_row`.) The CPU's range also covers each join input
+//! rounded to `f32` on its own path (`PER_PATH`, `JoinRounding`; seed 609): a nudge of the settings moves both paths of a
+//! cancellation `||P - M| - (M - I)|` together, so it never covers the device's own rounding of each path.
 //!
 //! The run asserts that every generated kind appeared. The seeds are a fixed set plus one rotating seed, from
 //! `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; each graph is printed with its seed and index, and a failing one with its
@@ -55,6 +57,7 @@ use std::sync::Arc;
 
 use common::*;
 use serde_json::{Value, json};
+use ym_color::display::JoinRounding;
 use ym_core::app::gpu::GpuStages;
 use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
 use ym_core::pipeline::{
@@ -147,6 +150,24 @@ fn gpu() -> Option<Arc<Gpu>> {
     }
 }
 
+/// [`gpu`] when the adapter is Metal's. The seed 609 tests judge the device's own `f32` rounding of each join path, which the
+/// CPU's per-path renders ([`PER_PATH`]) model for the backend the graph was found on; Mesa lavapipe rounds other ways and
+/// differs from the CPU at other values (113 values over the bound on this graph, more than the cap of exempt values), so there the
+/// tests are skipped, loudly.
+fn metal_gpu() -> Option<Arc<Gpu>> {
+    let gpu = gpu()?;
+    if gpu.info().backend.contains("Metal") {
+        return Some(gpu);
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "\n* seed 609 test SKIPPED in any_graph: the adapter is {} ({}), not Metal\n",
+        gpu.info().name,
+        gpu.info().backend
+    );
+    None
+}
+
 fn renderer(gpu: Option<Arc<Gpu>>, tile: usize) -> Renderer {
     renderer_with(gpu, tile, RenderOptions::default().view_band_bytes)
 }
@@ -175,6 +196,37 @@ fn renderer_with(gpu: Option<Arc<Gpu>>, tile: usize, view_band_bytes: u64) -> Re
     )
     .expect("render thread")
 }
+
+/// The CPU renderer of the export judge's per-path renders: [`renderer`] without a device, its mixers reading each input rounded
+/// as `rounding` says ([`JoinRounding`]).
+fn renderer_rounded(tile: usize, rounding: JoinRounding) -> Renderer {
+    let r = renderer(None, tile);
+    r.set_join_rounding(rounding);
+    r
+}
+
+/// The ways the CPU's mixers read their inputs that the judges fold into the CPU's own range (seed 609): each input rounded to
+/// `f32` on its own path, with the inputs at even and odd ports moved by one and by four `f32` steps in both directions, so that
+/// two paths carrying the same value differ by their own rounding as they do on the device.
+const PER_PATH: [JoinRounding; 5] = [
+    JoinRounding::F32,
+    JoinRounding::F32Skew {
+        even_up: true,
+        ulps: 1,
+    },
+    JoinRounding::F32Skew {
+        even_up: false,
+        ulps: 1,
+    },
+    JoinRounding::F32Skew {
+        even_up: true,
+        ulps: 4,
+    },
+    JoinRounding::F32Skew {
+        even_up: false,
+        ulps: 4,
+    },
+];
 
 // ---- the generator -------------------------------------------------------------------------------------------
 
@@ -1630,6 +1682,336 @@ fn seed_539_graph_0_export_is_judged_by_the_unstable_pixel_rule() {
     );
 }
 
+/// Seed 609, graph 1 of the rotating seed (Metal): Main, a Layer (Subtract) of Main and the Input, a Film node (exposure +0.3, grain
+/// 100, halation 200 at size 120, Strength 85), a Combiner that takes the Film picture's red, and a Layer (Difference) of the
+/// Combiner, Main and the Subtract Layer: `||P - M| - (M - I)|` with P the Film-red picture, M Main (at the identity) and I the Input.
+/// Where the Film leaves red nearly unchanged, `|P - M|` and `M - I` are both rounding residue (about 1e-6 of the linear value) and
+/// nearly cancel, and the Output's near-black curve amplifies the residue to hundreds of 16-bit codes (865 at most, on the
+/// boundaries of the Patchwork's patches, all red).
+///
+/// **It is not a device error.** The CPU rounds those residues one way (an f64 chain with an `f32` Film plane), the device another
+/// (`f32` registers and the decode of `join_lin`), and the device is chaotic there: a 1e-7 nudge of the temperature moves it by 1,000
+/// codes and the CPU by 1. A nudge of the settings moves both paths together, so the cancellation stays coherent in it and the CPU's
+/// nudged range never covered the device's rounding of each path (with node 2 replaced by `Subtract(Input, Input)`, exactly 0, the
+/// device is within 77 codes). The judges now fold the CPU's per-path renders ([`PER_PATH`]: each join input rounded to `f32` on its
+/// own, `JoinRounding`) into the CPU's range.
+const SEED_609_GRAPH_1: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"layer","mode":"subtract","opacity":1.0,"pos":[2,0.0]},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":3},"halation":{"amount":200,"size":120},"id":3,"kind":"film","pos":[3,0.0],"strength":85},{"id":4,"kind":"combiner","pos":[4,0.0]},{"id":5,"kind":"layer","mode":"difference","opacity":1.0,"pos":[5,0.0]}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture.1"}},{"from":{"node":"input","port":"picture"},"to":{"node":2,"port":"picture.2"}},{"from":{"node":"input","port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":3,"port":"picture"},"to":{"node":4,"port":"red"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture.1"}},{"from":{"node":1,"port":"picture"},"to":{"node":5,"port":"picture.2"}},{"from":{"node":2,"port":"picture"},"to":{"node":5,"port":"picture.3"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}"#;
+
+/// The scene the seed 609 graph was found on (as seed 539's).
+fn scene_609() -> Scene {
+    Scene::new(
+        640,
+        420,
+        light("sony-ilce-7rm4", 4800.0),
+        Layout::Patchwork,
+        0.5,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(5)
+}
+
+#[test]
+fn seed_609_graph_1_export_is_judged_by_the_unstable_pixel_rule() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = metal_gpu() else { return };
+    let d = Developed::new(&scene_609(), MODEL);
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_609_GRAPH_1).expect("settings");
+    let home = tempfile::tempdir().expect("dir");
+    let (dev_on, notes, dev) = export(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&gpu)), 256),
+        home.path(),
+        FormatKind::Png,
+    );
+    assert!(
+        dev_on == ComputeDevice::Gpu && !notes.iter().any(|n| n.contains("graphics card")),
+        "the export is {dev_on:?}, notes {notes:?}"
+    );
+    let (_, _, cpu_bytes) = export(
+        &d,
+        &settings,
+        renderer(None, 256),
+        home.path(),
+        FormatKind::Png,
+    );
+    let (dev, cpu) = (decode_png16_bytes(&dev), decode_png16_bytes(&cpu_bytes));
+    let max = dev
+        .iter()
+        .zip(&cpu)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    say(&format!(
+        "seed 609 graph 1: PNG export {max} of 65535 from the CPU's, {} values",
+        dev.len()
+    ));
+    let verdict = judge_export(&d, &settings, &dev, &cpu, home.path(), "seed 609 graph 1");
+    assert!(
+        verdict.failure.is_none(),
+        "seed 609 graph 1: the PNG export fails the bound: {}",
+        verdict.failure.unwrap_or_default()
+    );
+}
+
+#[test]
+fn seed_609_graph_1_view_is_judged_by_the_unstable_pixel_rule() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = metal_gpu() else { return };
+    let d = Developed::new(&scene_609(), MODEL);
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_609_GRAPH_1)
+        .expect("settings")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = d.source().with_settings(settings);
+    let device = renderer(Some(gpu), 256);
+    let cpu = renderer(None, 256);
+    for (what, st) in [
+        ("fit", view(false, false, None)),
+        ("100 %", view(true, false, None)),
+    ] {
+        let got = frame(&device, &src, &st);
+        assert!(
+            got.report.device == ComputeDevice::Gpu && !got.report.device_refused,
+            "seed 609 graph 1 {what}: the frame is {:?}, refused {}",
+            got.report.device,
+            got.report.device_refused
+        );
+        let _ = frame(&cpu, &src, &st);
+        let want = frame(&cpu, &src, &st);
+        let (max, over) = frame_diff(&got, &want);
+        say(&format!(
+            "seed 609 graph 1 {what}: the view is {max} codes from the CPU's, {over} values over 1"
+        ));
+        let mut judged = 0usize;
+        let verdict = judge_view(
+            &cpu,
+            &src,
+            &st,
+            &got,
+            &want,
+            &format!("seed 609 graph 1 {what}"),
+            &mut judged,
+        );
+        assert!(
+            verdict.failure.is_none(),
+            "seed 609 graph 1 {what}: the view fails the bound: {}",
+            verdict.failure.unwrap_or_default()
+        );
+    }
+}
+
+/// The judges still catch real errors with the per-path ranges folded in (CPU only; a CPU export and a CPU frame stand for the
+/// device). The device's value at an unstable index raised by 3,000 is outside the CPU's range and fails; at a stable index raised
+/// by 500 it fails as a stable difference; a device at the end of the per-path range passes; and the per-path renders widen the
+/// range at some values beyond the nudges' (the reason for them).
+#[test]
+fn the_per_path_ranges_still_catch_a_wrong_device_value_on_seed_609() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let d = Developed::new(&scene_609(), MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_609_GRAPH_1)
+        .expect("settings")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let doc = serde_json::to_value(&settings).expect("json");
+    let leaves = nudge_leaves(&doc);
+    let cpu = decode_png16_bytes(
+        &export(
+            &d,
+            &settings,
+            renderer(None, 256),
+            home.path(),
+            FormatKind::Png,
+        )
+        .2,
+    );
+    let ExportRanges {
+        lo,
+        hi,
+        renders,
+        nudged_only: (nlo, nhi),
+    } = export_ranges(&d, &doc, &leaves, &cpu, home.path());
+    assert!(renders > 0, "nothing was nudged");
+    let moved = |i: usize| (hi[i] - cpu[i]).max(cpu[i] - lo[i]);
+    let widened = (0..cpu.len())
+        .filter(|&i| hi[i] > nhi[i] + TEN_BIT_CODE || lo[i] + TEN_BIT_CODE < nlo[i])
+        .count();
+    let unstable = (0..cpu.len()).filter(|&i| moved(i) > TEN_BIT_CODE).count();
+    say(&format!(
+        "seed 609 graph 1 (CPU): {unstable} unstable values, {widened} whose range the per-path renders widen by more than {TEN_BIT_CODE}"
+    ));
+    assert!(
+        widened > 0,
+        "the per-path renders widen no value's range beyond the nudges'"
+    );
+    let at = (0..cpu.len())
+        .filter(|&i| moved(i) > TEN_BIT_CODE && cpu[i] + 3500 < 65535)
+        .max_by_key(|&i| moved(i))
+        .expect("an unstable value");
+    let stable = (0..cpu.len())
+        .find(|&i| moved(i) == 0 && cpu[i] + 600 < 65535)
+        .expect("a stable value");
+    let judge = |dev: &[u32]| judge_export_with(&d, &doc, &leaves, dev, &cpu, home.path(), "609");
+    let with = |i: usize, to: u32| {
+        let mut dev = cpu.clone();
+        dev[i] = to;
+        dev
+    };
+    // The end of the per-path range (above the bound from the CPU's value): in the CPU's own range, so it passes.
+    let end = if hi[at] - cpu[at] >= cpu[at] - lo[at] {
+        hi[at]
+    } else {
+        lo[at]
+    };
+    assert!(end.abs_diff(cpu[at]) > TEN_BIT_CODE);
+    let verdict = judge(&with(at, end));
+    assert!(
+        verdict.failure.is_none(),
+        "the end of the CPU's range passes: {:?}",
+        verdict.failure
+    );
+    // 3,000 above the CPU's range, and 500 at a stable value: each fails.
+    let text = judge(&with(at, hi[at] + 3000)).failure.unwrap_or_default();
+    assert!(text.contains("outside the CPU's own range"), "{text}");
+    let text = judge(&with(stable, cpu[stable] + 500))
+        .failure
+        .unwrap_or_default();
+    assert!(text.contains("stable values differ"), "{text}");
+}
+
+/// The same for the 8-bit view of seed 609 graph 1: a value of the CPU's view moved far outside its range, and one moved by 3 codes
+/// at a stable value, both fail with the per-path frames folded in.
+#[test]
+fn the_per_path_view_ranges_still_catch_a_wrong_device_value_on_seed_609() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let d = Developed::new(&scene_609(), MODEL);
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_609_GRAPH_1)
+        .expect("settings")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = d.source().with_settings(settings);
+    let cpu = renderer(None, 256);
+    let st = view(false, false, None);
+    let _ = frame(&cpu, &src, &st);
+    let base = frame(&cpu, &src, &st);
+    let doc = serde_json::to_value(&src.settings).expect("json");
+    let leaves = nudge_leaves(&doc);
+    let (mut lo, mut hi, renders) = view_ranges(&cpu, &src, &st, &doc, &leaves, &base);
+    let (nlo, nhi) = (lo.clone(), hi.clone());
+    fold_per_path_view(&cpu, &src, &st, &mut lo, &mut hi);
+    // The option is off again: the CPU's frame is what it was, bit for bit.
+    assert!(
+        frame(&cpu, &src, &st).rgba == base.rgba,
+        "the CPU renderer keeps a join rounding"
+    );
+    let moved = |i: usize| (hi[i] - base.rgba[i]).max(base.rgba[i] - lo[i]);
+    let nudged = |i: usize| (nhi[i] - base.rgba[i]).max(base.rgba[i] - nlo[i]);
+    let widened = (0..base.rgba.len())
+        .filter(|&i| moved(i) > 1 && nudged(i) <= 1)
+        .count();
+    say(&format!(
+        "seed 609 graph 1 (CPU view): {widened} values the per-path frames move by more than 1 and the nudges do not"
+    ));
+    let with = |i: usize, to: u8| {
+        let mut dev = base.clone();
+        dev.rgba[i] = to;
+        dev
+    };
+    let stable = (0..base.rgba.len())
+        .find(|&i| moved(i) == 0 && base.rgba[i] >= 8 && base.rgba[i] <= 247)
+        .expect("a stable value");
+    let text = judge_view_with(
+        &with(stable, base.rgba[stable] + 3),
+        &base,
+        &lo,
+        &hi,
+        renders,
+        "609",
+    )
+    .failure
+    .unwrap_or_default();
+    assert!(text.contains("differ by 3 codes"), "{text}");
+    if let Some(at) = (0..base.rgba.len())
+        .filter(|&i| moved(i) > 1 && hi[i] <= 200)
+        .max_by_key(|&i| moved(i))
+    {
+        let text = judge_view_with(&with(at, hi[at] + 40), &base, &lo, &hi, renders, "609")
+            .failure
+            .unwrap_or_default();
+        assert!(text.contains("outside the CPU's own range"), "{text}");
+    }
+}
+
+/// The option off is the default render, bit for bit, and on it changes only graphs that subtract two paths: a graph with no
+/// mixer is the same bits, and `Exact` on the CPU's mixers is [`ym_color::display::mix::layer`] and
+/// [`ym_color::display::mix::parallel`] as they were.
+#[test]
+fn the_join_rounding_option_is_off_by_default_and_changes_nothing_when_off() {
+    use ym_color::display::mix::{self, Source};
+    use ym_color::display::{BlendMode, JoinRounding};
+    assert_eq!(JoinRounding::default(), JoinRounding::Exact);
+    assert_eq!(RenderOptions::default().join_rounding, JoinRounding::Exact);
+    let src = |v: [f64; 3]| Source {
+        logc4: v,
+        linear: None,
+    };
+    let (a, b, c) = (
+        src([0.3, 0.41, 0.52]),
+        src([0.30000001, 0.4100001, 0.5200003]),
+        src([0.7, 0.2, 0.9]),
+    );
+    for mode in BlendMode::ALL {
+        for opacity in [1.0, 0.37] {
+            let alphas = [None, None, Some(0.8)];
+            let old = mix::layer(mode, opacity, &[a, b, c], &alphas);
+            let new = mix::layer_rounded(mode, opacity, &[a, b, c], &alphas, JoinRounding::Exact);
+            assert!(
+                old.iter()
+                    .zip(&new)
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+            );
+        }
+    }
+    let inputs = [a.logc4, b.logc4];
+    let old = mix::parallel(c.logc4, &inputs, |_| false);
+    let new = mix::parallel_rounded(c.logc4, &inputs, |_| false, JoinRounding::Exact);
+    assert!(
+        old.iter()
+            .zip(&new)
+            .all(|(x, y)| x.to_bits() == y.to_bits())
+    );
+    // On, a cancelling graph moves: `||a - b| - |b - a||` is exactly 0 for equal inputs read alike, and not for inputs that
+    // rounding reads differently.
+    let near = [a, src([0.3 + 1e-9, 0.41 + 1e-9, 0.52 + 1e-9])];
+    let exact = mix::layer(BlendMode::Subtract, 1.0, &near, &[None, None]);
+    let rounded = mix::layer_rounded(
+        BlendMode::Subtract,
+        1.0,
+        &near,
+        &[None, None],
+        JoinRounding::F32Skew {
+            even_up: true,
+            ulps: 1,
+        },
+    );
+    assert!(
+        exact != rounded,
+        "a skewed rounding changes a cancelling pair"
+    );
+}
+
 /// The bindings of the size sweep, in KiB: from 1 MiB up (`docs/23` section 5.12, *Limits*). The reference is the frame at
 /// the default binding, which holds a whole view.
 const SWEEP_KIB: [u64; 2] = [1024, 4096];
@@ -2209,11 +2591,27 @@ fn set_number(doc: &mut Value, at: &str, to: f64) {
 
 /// The CPU's PNG export of a settings document, as 16-bit values (`None` when the document is not a valid graph or the size differs).
 fn cpu_png_of(d: &Developed, doc: &Value, home: &Path, len: usize) -> Option<Vec<u32>> {
+    cpu_png_of_rounded(d, doc, home, len, JoinRounding::Exact)
+}
+
+/// [`cpu_png_of`] with the CPU's mixers reading their inputs as `rounding` says.
+fn cpu_png_of_rounded(
+    d: &Developed,
+    doc: &Value,
+    home: &Path,
+    len: usize,
+    rounding: JoinRounding,
+) -> Option<Vec<u32>> {
     let valid = serde_json::from_value::<DevelopSettings>(doc.clone())
         .ok()?
         .validated()
         .ok()?;
-    let png = export(d, &valid.0, renderer(None, 256), home, FormatKind::Png).2;
+    let renderer = if rounding == JoinRounding::Exact {
+        renderer(None, 256)
+    } else {
+        renderer_rounded(256, rounding)
+    };
+    let png = export(d, &valid.0, renderer, home, FormatKind::Png).2;
     let values = decode_png16_bytes(&png);
     (values.len() == len).then_some(values)
 }
@@ -2279,23 +2677,10 @@ fn judge_export_with(
     let fail = |text: String| Judged {
         failure: Some(format!("{name}: {text}")),
     };
-    // The CPU's own range at every value, and how far a nudge moved it.
-    let (mut lo, mut hi) = (cpu.to_vec(), cpu.to_vec());
-    let mut renders = 0usize;
-    let mut take = |doc: &Value| {
-        let Some(moved) = cpu_png_of(d, doc, home, cpu.len()) else {
-            return;
-        };
-        renders += 1;
-        for (i, m) in moved.iter().enumerate() {
-            lo[i] = lo[i].min(*m);
-            hi[i] = hi[i].max(*m);
-        }
-    };
-    // All the settings at once, with seeded signs.
-    for nudged in nudged_documents(doc, leaves) {
-        take(&nudged);
-    }
+    // The CPU's own range at every value: the nudged settings, and each join input rounded on its own path (seed 609).
+    let ExportRanges {
+        lo, hi, renders, ..
+    } = export_ranges(d, doc, leaves, cpu, home);
     if leaves.is_empty() || renders == 0 {
         return fail(format!(
             "{} values over {TEN_BIT_CODE} (largest {}) and nothing could be nudged, so nothing is exempt",
@@ -2357,6 +2742,73 @@ fn judge_export_with(
     }
 }
 
+/// What [`export_ranges`] finds: the CPU's range, how many nudged renders were made, and the range of the nudged renders alone.
+struct ExportRanges {
+    lo: Vec<u32>,
+    hi: Vec<u32>,
+    renders: usize,
+    nudged_only: (Vec<u32>, Vec<u32>),
+}
+
+/// The CPU's own range of every value of the PNG 16 export of `doc` (`cpu` is its export): the minimum and maximum over the
+/// [`COMBINED_NUDGES`] renders with every continuous setting nudged at once, and over the [`PER_PATH`] renders with each join input
+/// rounded to `f32` on its own path. A nudge moves both paths of a graph together, so a cancellation between two paths that carry the
+/// same value (`||P - M| - (M - I)|`, seed 609) stays coherent in it and its range never covers the device's own rounding of each
+/// path; the per-path renders do. Returns the range, how many nudged renders were made (what the "nothing nudged" safeguard counts),
+/// and the range of the nudged renders alone.
+fn export_ranges(
+    d: &Developed,
+    doc: &Value,
+    leaves: &[Leaf],
+    cpu: &[u32],
+    home: &Path,
+) -> ExportRanges {
+    let (mut lo, mut hi) = (cpu.to_vec(), cpu.to_vec());
+    let mut renders = 0usize;
+    let mut take = |doc: &Value| {
+        let Some(moved) = cpu_png_of(d, doc, home, cpu.len()) else {
+            return;
+        };
+        renders += 1;
+        for (i, m) in moved.iter().enumerate() {
+            lo[i] = lo[i].min(*m);
+            hi[i] = hi[i].max(*m);
+        }
+    };
+    // All the settings at once, with seeded signs.
+    for nudged in nudged_documents(doc, leaves) {
+        take(&nudged);
+    }
+    let nudged_only = (lo.clone(), hi.clone());
+    if leaves.is_empty() || renders == 0 {
+        return ExportRanges {
+            lo,
+            hi,
+            renders,
+            nudged_only,
+        };
+    }
+    // Each join input rounded on its own path, on the settings as they are.
+    let mut take = |rounding: JoinRounding| {
+        let Some(moved) = cpu_png_of_rounded(d, doc, home, cpu.len(), rounding) else {
+            return;
+        };
+        for (i, m) in moved.iter().enumerate() {
+            lo[i] = lo[i].min(*m);
+            hi[i] = hi[i].max(*m);
+        }
+    };
+    for rounding in PER_PATH {
+        take(rounding);
+    }
+    ExportRanges {
+        lo,
+        hi,
+        renders,
+        nudged_only,
+    }
+}
+
 /// The settings document with every continuous setting moved at once by plus or minus a step, [`COMBINED_NUDGES`] times, the signs
 /// drawn from [`NUDGE_SEED`]: the documents the CPU renders again to see what is unstable.
 fn nudged_documents(doc: &Value, leaves: &[Leaf]) -> Vec<Value> {
@@ -2409,6 +2861,30 @@ fn view_ranges(
     (lo, hi, renders)
 }
 
+/// Folds into `lo` and `hi` the CPU's view of `src` with each join input rounded to `f32` on its own path ([`PER_PATH`]), as the
+/// export judge does ([`export_ranges`]): a nudge of the settings moves both paths of a cancellation together, the device's own
+/// rounding of each path does not (seed 609). `cpu` reads its inputs exactly again when this returns.
+fn fold_per_path_view(
+    cpu: &Renderer,
+    src: &PhotoSource,
+    st: &ViewportState,
+    lo: &mut [u8],
+    hi: &mut [u8],
+) {
+    for rounding in PER_PATH {
+        cpu.set_join_rounding(rounding);
+        let moved = frame(cpu, src, st);
+        cpu.set_join_rounding(JoinRounding::Exact);
+        if moved.rgba.len() != lo.len() {
+            continue;
+        }
+        for (i, m) in moved.rgba.iter().enumerate() {
+            lo[i] = lo[i].min(*m);
+            hi[i] = hi[i].max(*m);
+        }
+    }
+}
+
 /// The device's 8-bit view against the CPU's under the view bound (at most 2 codes, and fewer than a 2000th of the values over 1),
 /// with the unstable-pixel rule of the export applied to the view (the owner, 2026-11-21: "extend the rule so there are no exceptions
 /// for specific cases").
@@ -2442,7 +2918,10 @@ fn judge_view(
         };
     };
     let leaves = nudge_leaves(&doc);
-    let (lo, hi, renders) = view_ranges(cpu, src, st, &doc, &leaves, want);
+    let (mut lo, mut hi, renders) = view_ranges(cpu, src, st, &doc, &leaves, want);
+    if renders > 0 {
+        fold_per_path_view(cpu, src, st, &mut lo, &mut hi);
+    }
     judge_view_with(dev, want, &lo, &hi, renders, name)
 }
 

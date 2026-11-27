@@ -67,6 +67,63 @@ impl BlendMode {
     }
 }
 
+/// How the join blends read their input pictures: a reference and diagnostic option for judging a device render, never
+/// the product's. The default, [`JoinRounding::Exact`], reads every input as the f64 chain made it and is what every
+/// render, export and golden hash uses. The device carries each picture in `f32` and each path rounds on its own, so two
+/// paths that carry the same value can differ by their own rounding; a graph that subtracts such paths
+/// (`||P - M| - (M - I)|`, `any_graph` seed 609) turns that residue into hundreds of codes at a near-black Output. The
+/// other variants round **each input on its own** to `f32` (the Layer's linear inputs, the Parallel's LogC4 inputs and
+/// base), so a test can see the range the CPU's own rounding spans there. They are deterministic: no randomness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum JoinRounding {
+    /// Every input as the chain made it, in f64. The default.
+    #[default]
+    Exact,
+    /// Every input rounded to the nearest `f32`.
+    F32,
+    /// Every input rounded to `f32`, then moved `ulps` `f32` steps: the inputs at an even port up and at an odd port down
+    /// when `even_up` is true, the other way round when it is false. The two phases cover both directions of a rounding
+    /// that differs between paths, and `ulps` how far.
+    F32Skew {
+        /// Whether the even ports are moved up (and the odd ports down).
+        even_up: bool,
+        /// How many `f32` steps each input is moved.
+        ulps: u8,
+    },
+}
+
+impl JoinRounding {
+    /// The input at port `port` as this option reads it. [`JoinRounding::Exact`] returns `v` unchanged, bit for bit.
+    #[must_use]
+    pub fn read(self, port: usize, v: f64) -> f64 {
+        match self {
+            Self::Exact => v,
+            Self::F32 => f64::from(v as f32),
+            Self::F32Skew { even_up, ulps } => {
+                let mut r = v as f32;
+                if !r.is_finite() {
+                    return f64::from(r);
+                }
+                let up = port.is_multiple_of(2) == even_up;
+                for _ in 0..ulps {
+                    r = if up { r.next_up() } else { r.next_down() };
+                }
+                f64::from(r)
+            }
+        }
+    }
+
+    /// [`JoinRounding::read`] on a triple.
+    #[must_use]
+    pub fn read3(self, port: usize, v: Vec3) -> Vec3 {
+        [
+            self.read(port, v[0]),
+            self.read(port, v[1]),
+            self.read(port, v[2]),
+        ]
+    }
+}
+
 /// What the settings give a mixer in the chain: whether it is bypassed and, for a Layer, its mode and opacity. A
 /// Splitter and a Combiner have no parameters ([`JoinParams::default`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -121,11 +178,25 @@ impl Source {
 /// Nothing is clamped.
 #[must_use]
 pub fn parallel(base: Vec3, inputs: &[Vec3], is_base: impl Fn(usize) -> bool) -> Vec3 {
+    parallel_rounded(base, inputs, is_base, JoinRounding::Exact)
+}
+
+/// [`parallel`] reading its base and inputs through `rounding` (the base at port `inputs.len()`, so that it is skewed
+/// against the last input). [`JoinRounding::Exact`] is [`parallel`], bit for bit.
+#[must_use]
+pub fn parallel_rounded(
+    base: Vec3,
+    inputs: &[Vec3],
+    is_base: impl Fn(usize) -> bool,
+    rounding: JoinRounding,
+) -> Vec3 {
+    let base = rounding.read3(inputs.len(), base);
     let mut acc = base;
     for (i, v) in inputs.iter().enumerate() {
         if is_base(i) {
             continue;
         }
+        let v = &rounding.read3(i, *v);
         acc = [
             acc[0] + (v[0] - base[0]),
             acc[1] + (v[1] - base[1]),
@@ -142,6 +213,18 @@ pub fn parallel(base: Vec3, inputs: &[Vec3], is_base: impl Fn(usize) -> bool) ->
 /// decode and encode.
 #[must_use]
 pub fn layer(mode: BlendMode, opacity: f64, inputs: &[Source], alphas: &[Option<f64>]) -> Vec3 {
+    layer_rounded(mode, opacity, inputs, alphas, JoinRounding::Exact)
+}
+
+/// [`layer`] reading each input's linear value through `rounding`. [`JoinRounding::Exact`] is [`layer`], bit for bit.
+#[must_use]
+pub fn layer_rounded(
+    mode: BlendMode,
+    opacity: f64,
+    inputs: &[Source],
+    alphas: &[Option<f64>],
+    rounding: JoinRounding,
+) -> Vec3 {
     let Some(bottom) = inputs.first() else {
         return [0.0; 3];
     };
@@ -154,8 +237,8 @@ pub fn layer(mode: BlendMode, opacity: f64, inputs: &[Source], alphas: &[Option<
         if alpha == 0.0 {
             continue;
         }
-        let below = acc.unwrap_or_else(|| bottom.linear());
-        let blended = mode.blend(below, top.linear());
+        let below = acc.unwrap_or_else(|| rounding.read3(0, bottom.linear()));
+        let blended = mode.blend(below, rounding.read3(i, top.linear()));
         acc = Some(if alpha == 1.0 {
             blended
         } else {
