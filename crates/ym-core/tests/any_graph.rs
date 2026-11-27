@@ -4368,3 +4368,76 @@ fn diag609_leaves_one_at_a_time() {
         ));
     }
 }
+
+#[test]
+fn diag609_more() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let full: Value = serde_json::from_str(DIAG_609).expect("json");
+    let link_to = |v: &mut Value, to_node: u64, to_port: &str, from_node: Value| {
+        if let Some(links) = v["nodes"]["links"].as_array_mut() {
+            for l in links.iter_mut() {
+                if l["to"]["node"] == json!(to_node) && l["to"]["port"] == json!(to_port) {
+                    l["from"]["node"] = from_node.clone();
+                    l["from"]["port"] = json!("picture");
+                }
+            }
+        }
+    };
+    let mut variants: Vec<(String, Value)> = vec![("full".into(), full.clone())];
+    let mut a = full.clone();
+    link_to(&mut a, 2, "picture.1", json!("input"));
+    variants.push(("A node 2 = subtract(input, input), exactly 0".into(), a));
+    let mut b = full.clone();
+    link_to(&mut b, 5, "picture.2", json!("input"));
+    variants.push(("B node 5 reads the input instead of Main on picture.2".into(), b));
+    let mut c = full.clone();
+    for (ptr, v) in [("/nodes/items/2/grain/amount", 0), ("/nodes/items/2/halation/amount", 0)] {
+        if let Some(t) = c.pointer_mut(ptr) {
+            *t = json!(v);
+        }
+    }
+    variants.push(("C grain 0 and halation 0".into(), c));
+    let mut e = full.clone();
+    if let Some(t) = e.pointer_mut("/nodes/items/4/mode") {
+        *t = json!("subtract");
+    }
+    variants.push(("E node 5 mode subtract".into(), e));
+    let samples = [(212usize, 7usize), (212, 10), (212, 11), (426, 253), (141, 314), (461, 316)];
+    for (name, v) in &variants {
+        let Some(valid) = diag_valid(v) else {
+            say(&format!("DIAG2 {name}: not a valid document"));
+            continue;
+        };
+        let dev = decode_png16_bytes(&export(&d, &valid.0, renderer(Some(Arc::clone(&gpu)), 256), home.path(), FormatKind::Png).2);
+        let cpu = decode_png16_bytes(&export(&d, &valid.0, renderer(None, 256), home.path(), FormatKind::Png).2);
+        diag_stats(&format!("DIAG2 {name}"), "device vs CPU", &dev, &cpu);
+        for (x, y) in samples {
+            let i = (y * 640 + x) * 3;
+            say(&format!("DIAG2 {name}: pixel ({x},{y}) cpu {:?} device {:?}", &cpu[i..i + 3], &dev[i..i + 3]));
+        }
+    }
+    // The gain of the CPU's and the device's red at the sample pixels for Main's temperature trim, from tiny to 2e-3.
+    for t in [0.0, 1e-7, 1e-6, 1e-5, 1e-4, 5e-4, 2e-3] {
+        let mut v = full.clone();
+        set_number(&mut v, "/nodes/items/0/trim/temperature", t);
+        let Some(valid) = diag_valid(&v) else { continue };
+        let dev = decode_png16_bytes(&export(&d, &valid.0, renderer(Some(Arc::clone(&gpu)), 256), home.path(), FormatKind::Png).2);
+        let cpu = decode_png16_bytes(&export(&d, &valid.0, renderer(None, 256), home.path(), FormatKind::Png).2);
+        let at = |p: &[u32]| {
+            samples
+                .iter()
+                .map(|&(x, y)| p[(y * 640 + x) * 3])
+                .collect::<Vec<_>>()
+        };
+        say(&format!("DIAG2 gain temperature {t:e}: cpu red {:?} device red {:?}", at(&cpu), at(&dev)));
+    }
+}
