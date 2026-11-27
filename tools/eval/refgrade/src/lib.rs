@@ -10,10 +10,12 @@
 //! * [`run`] the fit loop, shards, resume, and the element-mask check against labels;
 //! * [`report`] the records, their summaries and the merge of shards;
 //! * [`compare`] two runs under the three rules;
+//! * [`explain`] why a fit does harm: the fit's numbers, terms, H2 and H4 statistics and counterfactuals, per pair (RG-13);
 //! * [`diagnose`] the objective of a solution made elsewhere against the fit's own, term by term (`docs/34` section 16.10).
 
 pub mod compare;
 pub mod diagnose;
+pub mod explain;
 pub mod measure;
 pub mod report;
 pub mod run;

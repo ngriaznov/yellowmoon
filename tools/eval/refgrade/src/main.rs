@@ -176,6 +176,43 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         threads: usize,
     },
+    /// Re-runs the fit of chosen (photo, reference) pairs and explains it: the numbers by group, the objective's terms, the skin and whites
+    /// statistics behind H2 and H4, the skin masks, and counterfactuals with each group of numbers at identity (RG-13, dev set only).
+    Explain {
+        /// The local `split.json`.
+        #[arg(long)]
+        split: PathBuf,
+        /// The folder of reference stills.
+        #[arg(long)]
+        references: PathBuf,
+        /// The pairs, one `photo:reference` per line (not needed with `--facts-only`).
+        #[arg(long)]
+        pairs: Option<PathBuf>,
+        /// Where one JSON per pair goes (a pair whose file exists is skipped).
+        #[arg(long)]
+        out: PathBuf,
+        /// This process's share, `i/n`: the photos whose position in the pairs' photo list is `i` modulo `n`.
+        #[arg(long, default_value = "0/1")]
+        shard: String,
+        /// Threads of this process.
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+        /// The `data/` folder.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Also search again with each harm-clearing group at identity (about three minutes more per pair).
+        #[arg(long)]
+        repolish: bool,
+        /// What-if searches: the folder of an earlier explain's files (their fitted numbers are used, no fit is made). Needs `--variants`.
+        #[arg(long)]
+        whatif_from: Option<PathBuf>,
+        /// With `--whatif-from`: the objectives to search under, `no_skin_abs`, `skin_relative`, `whites_licence`, `both`.
+        #[arg(long, value_delimiter = ',')]
+        variants: Vec<String>,
+        /// Write only the photo-level facts of every dev photo (`facts/<photo>.json`), with no reference and no fit.
+        #[arg(long)]
+        facts_only: bool,
+    },
     /// Prints the seeded sample of held-out photos that go to the owner (the numbers on the held-out set stay aggregate).
     Sample {
         /// The local `split.json`.
@@ -348,6 +385,48 @@ fn main() -> Result<()> {
             poc_dir,
             pairs: pair,
             solutions,
+        }),
+        Cmd::Explain {
+            split,
+            references,
+            pairs,
+            out,
+            shard,
+            threads,
+            data,
+            repolish,
+            whatif_from,
+            variants,
+            facts_only,
+        } => refgrade_eval::explain::explain(&refgrade_eval::explain::ExplainOpts {
+            run: RunOpts {
+                split,
+                set: "dev".into(),
+                references,
+                out,
+                shard: parse_shard(&shard)?,
+                threads,
+                only: Vec::new(),
+                max_photos: None,
+                data,
+                resume: false,
+                mask_check: false,
+                audit: false,
+                scene: SceneMode::Product,
+                reference_labels: None,
+            },
+            pairs: match pairs {
+                Some(p) => p,
+                None if facts_only => PathBuf::new(),
+                None => bail!("--pairs is needed"),
+            },
+            repolish,
+            whatif: match whatif_from {
+                Some(d) if !variants.is_empty() => Some((d, variants)),
+                Some(_) => bail!("--whatif-from needs --variants"),
+                None => None,
+            },
+            facts_only,
         }),
         Cmd::Sample { split } => {
             for name in owner_sample(&read_split(&split)?) {
