@@ -416,7 +416,7 @@ fn masks_json(ctx: &Ctx<'_>, sample: &FitPhoto, fixed: &Fixed, skin_protection: 
         .count();
     let n_e = ctx.p0.len();
     let pe = &fixed.p.el[5];
-    let present = pe.share >= ym_color::refgrade::measure::PRESENT_SHARE;
+    let present = fixed.coverage.skin >= ym_color::refgrade::objective::HARM_COVERAGE;
     let (_, pc) = pe.mv();
     json!({
         "h2_mask": "the scene's skin plane at every pixel of the analysis picture (Pic::skin of the photo's own scene)",
@@ -431,7 +431,7 @@ fn masks_json(ctx: &Ctx<'_>, sample: &FitPhoto, fixed: &Fixed, skin_protection: 
         "person_share": person as f64 / n_e as f64,
         "skin_share_of_person": if person == 0 { Value::Null } else { json!(person_skin as f64 / person as f64) },
         "skin_protection": skin_protection,
-        "guard_present_gate_2pct": present,
+        "guard_gate_1pct": present,
         "guard_mean_vector_c": pc,
         "guard_drift_wall_applies": present && skin_protection && pc >= 2.5,
         "guard_absolute_and_chroma_walls_apply": present && skin_protection,
@@ -458,7 +458,9 @@ fn whites_wall_json(p_px: &[Px], scene: &PixelScene, f: &Fixed) -> Value {
         .count();
     json!({
         "group_share_c10": hl as f64 / n, "cap_pixels_share_nonskin_c8": cap as f64 / n, "h4_definition_share_on_sample": any8 as f64 / n,
-        "walls_apply": hl as f64 >= 0.02 * n,
+        "walls_apply": f.licence.on,
+        "licence": { "photo_c": f.licence.photo_c, "reference_c": f.licence.reference_c, "allowed": f.licence.allowed, "inner": f.licence.inner, "cap": f.licence.cap },
+        "coverage": { "skin": f.coverage.skin, "whites": f.coverage.whites },
         "hl_cmax": f.t.hl_cmax, "white_tol": f.t.white_tol, "white_target": f.t.white,
     })
 }
@@ -750,134 +752,20 @@ fn saved_numbers(path: &Path) -> Result<Params> {
     Ok(x)
 }
 
-/// What the what-if walls read of the photo (on the fit's sample, like the objective) and of the reference.
-struct Extra {
-    skin_idx: Vec<usize>,
-    skin_share: f64,
-    p_skin_c: f64,
-    p_skin_hue: f64,
-    white_idx: Vec<usize>,
-    white_share: f64,
-    p_white_c: f64,
-    ref_white_c: Option<f64>,
-}
-
-impl Extra {
-    fn new(p_px: &[Px], scene: &PixelScene, ref_whites_c: Option<f64>) -> Self {
-        let n = p_px.len() as f64;
-        let skin_idx: Vec<usize> = (0..p_px.len()).filter(|&i| scene.skin[i]).collect();
-        let (c, h) = skin_mv(p_px, &skin_idx);
-        let white_idx: Vec<usize> = (0..p_px.len())
-            .filter(|&i| !scene.skin[i] && p_px[i].lab[0] >= 80.0 && p_px[i].chroma < 8.0)
-            .collect();
-        let p_white_c = mean_c(p_px, &white_idx);
-        Self {
-            skin_share: skin_idx.len() as f64 / n,
-            skin_idx,
-            p_skin_c: c,
-            p_skin_hue: h,
-            white_share: white_idx.len() as f64 / n,
-            white_idx,
-            p_white_c,
-            ref_white_c: ref_whites_c,
-        }
-    }
-}
-
-/// The CIELAB mean-vector chroma and the Oklab mean-vector hue of the pixels at `idx`.
-fn skin_mv(px: &[Px], idx: &[usize]) -> (f64, f64) {
-    if idx.is_empty() {
-        return (0.0, 0.0);
-    }
-    let n = idx.len() as f64;
-    let (mut a, mut b, mut oa, mut ob) = (0.0, 0.0, 0.0, 0.0);
-    for &i in idx {
-        a += px[i].lab[1];
-        b += px[i].lab[2];
-        oa += px[i].ok[0];
-        ob += px[i].ok[1];
-    }
-    ((a / n).hypot(b / n), oklab_hue([oa / n, ob / n]))
-}
-
-fn mean_c(px: &[Px], idx: &[usize]) -> f64 {
-    if idx.is_empty() {
-        0.0
-    } else {
-        idx.iter().map(|&i| px[i].chroma).sum::<f64>() / idx.len() as f64
-    }
-}
-
-/// The skin walls of the `skin_relative` variant: relative to the photo's own skin, two-sided in chroma, gated at the harm's own 1 %.
-/// Chroma ratio inside 0.65 to 1.2 (the harm lines are 0.55 and 1.25), hue move inside 8 degrees (the harm line is 10).
-fn skin_relative_wall(ex: &Extra, px: &[Px]) -> f64 {
-    if ex.skin_share < 0.01 || ex.skin_idx.is_empty() {
-        return 0.0;
-    }
-    let (c, h) = skin_mv(px, &ex.skin_idx);
-    let r = (c.max(1.0) / ex.p_skin_c.max(1.0)).ln();
-    let mut w = 12.0 * ((r - 1.2f64.ln()).max(0.0) / 0.05).powi(2);
-    w += 12.0 * ((-r - (1.0f64 / 0.65).ln()).max(0.0) / 0.05).powi(2);
-    if ex.p_skin_c >= 4.0 {
-        w += 12.0 * ((wrap_deg(h - ex.p_skin_hue).abs() - 8.0).max(0.0) / 3.0).powi(2);
-    }
-    w
-}
-
-/// The whites licence of the `whites_licence` variant: the photo's non-skin whites may carry the reference's own whites' chroma, at most 3
-/// points above the photo's, and with no whites in the reference no new chroma at all; `allow = max(p, min(r, p + 3)) + 1`.
-fn whites_licence_wall(ex: &Extra, px: &[Px]) -> f64 {
-    if ex.white_share < 0.005 {
-        return 0.0;
-    }
-    let p = ex.p_white_c;
-    let r = ex.ref_white_c.unwrap_or(p);
-    let allow = p.max(r.min(p + 3.0)) + 1.0;
-    3.0 * ((mean_c(px, &ex.white_idx) - allow).max(0.0) / 2.0).powi(2)
-}
-
-/// The full objective of `x` under a what-if variant: the product's own objective with the named change (terms taken out, or a wall
-/// added). `base` is the product's objective itself.
-fn variant_objective(
-    ctx: &mut Ctx<'_>,
-    ex: &Extra,
-    variant: &str,
-    x: &Params,
-    buf: &mut [Px],
-) -> Result<f64> {
-    let (obj, t) = score(&ctx.setup, &mut ctx.cands, x).map_err(|e| anyhow!("{e}"))?;
-    if variant == "base" || t.clip >= 1e5 {
-        return Ok(obj);
-    }
-    ctx.cands
-        .render(x, buf)
-        .map_err(|_| anyhow!("render refused"))?;
-    Ok(match variant {
-        "no_skin_abs" => obj - t.guard_skin,
-        "skin_relative" => {
-            obj - t.guard_skin - t.guard_skin_drift - t.guard_skin_chroma
-                + skin_relative_wall(ex, buf)
-        }
-        "whites_licence" => obj + whites_licence_wall(ex, buf),
-        "both" => {
-            obj - t.guard_skin - t.guard_skin_drift - t.guard_skin_chroma
-                + skin_relative_wall(ex, buf)
-                + whites_licence_wall(ex, buf)
-        }
+/// The full objective of `x` under a what-if variant. After RG-13 the product has the skin and whites principles itself, so the only
+/// variant left is `base`: the product's own objective (the control of a re-search).
+fn variant_objective(ctx: &mut Ctx<'_>, variant: &str, x: &Params) -> Result<f64> {
+    let (obj, _) = score(&ctx.setup, &mut ctx.cands, x).map_err(|e| anyhow!("{e}"))?;
+    match variant {
+        "base" => Ok(obj),
         other => bail!("unknown what-if variant {other}"),
-    })
+    }
 }
 
 /// Searches `x0` again under the variant: the repolish passes over every number, the search's own golden step.
-fn search_variant(
-    ctx: &mut Ctx<'_>,
-    ex: &Extra,
-    variant: &str,
-    x0: &Params,
-    buf: &mut [Px],
-) -> Result<Params> {
+fn search_variant(ctx: &mut Ctx<'_>, variant: &str, x0: &Params) -> Result<Params> {
     let mut x = *x0;
-    let mut f = |x: &Params| variant_objective(ctx, ex, variant, x, buf);
+    let mut f = |x: &Params| variant_objective(ctx, variant, x);
     let mut cur = f(&x)?;
     for pass in REPOLISH_PASSES {
         for i in 0..N_PARAMS {
@@ -889,25 +777,18 @@ fn search_variant(
 
 fn whatif_pair(
     ctx: &mut Ctx<'_>,
-    scene: &PixelScene,
-    p_px: &[Px],
     entry: &SplitEntry,
     rname: &str,
     x: &Params,
     variants: &[String],
 ) -> Result<Value> {
-    let ref_c = stat(ctx.refpx, &ctx.ref_whites)
-        .filter(|s| s.share >= 0.005)
-        .map(|s| s.c_mean);
-    let ex = Extra::new(p_px, scene, ref_c);
-    let mut buf = vec![Px::default(); ctx.cands.sample_len()];
     let (fit_v, fit_obj, _) = ctx.at("fit", "fit", x)?;
     let mut out = Vec::new();
     for v in variants {
         let t = Instant::now();
-        let before = variant_objective(ctx, &ex, v, x, &mut buf)?;
-        let y = search_variant(ctx, &ex, v, x, &mut buf)?;
-        let after = variant_objective(ctx, &ex, v, &y, &mut buf)?;
+        let before = variant_objective(ctx, v, x)?;
+        let y = search_variant(ctx, v, x)?;
+        let after = variant_objective(ctx, v, &y)?;
         let (mut rec, obj_y, _) = ctx.at(v, "whatif", &y)?;
         rec["variant_objective_at_fit"] = json!(before);
         rec["variant_objective_after"] = json!(after);
@@ -965,13 +846,14 @@ fn one_pair(
     cands
         .render(&[0.0; N_PARAMS], &mut p_px)
         .map_err(|_| anyhow!("the photo could not be rendered"))?;
-    let fixed = Fixed::new(
+    let fixed = Fixed::with_coverage(
         net,
         &p_px,
         &sample.scene,
         &refm.px,
         &refm.scene,
         base.skin_protection,
+        sample.coverage,
     )
     .map_err(|e| anyhow!("{e}"))?;
     let setup = FitSetup {
@@ -1018,7 +900,7 @@ fn one_pair(
         p0_whites,
     };
     if let (Some(x), Some((_, variants))) = (saved, &opts.whatif) {
-        return whatif_pair(&mut ctx, &sample.scene, &p_px, entry, rname, &x, variants);
+        return whatif_pair(&mut ctx, entry, rname, &x, variants);
     }
     let fit = fit.ok_or_else(|| anyhow!("no fit"))?;
     let x = fit.result.x;
@@ -1296,90 +1178,6 @@ mod tests {
         // 3 degrees outside the hue band and 3 outside the chroma band: 12 * (1 + 1).
         assert!((skin_absolute_wall(27.0, 9.0) - 24.0).abs() < 1e-9);
         assert!((skin_absolute_wall(73.0, 41.0) - 24.0).abs() < 1e-9);
-    }
-
-    fn extra_for(p_px: &[Px], skin: &[bool], ref_whites_c: Option<f64>) -> Extra {
-        let mut scene = PixelScene::blank(p_px.len());
-        scene.skin = skin.to_vec();
-        Extra::new(p_px, &scene, ref_whites_c)
-    }
-
-    #[test]
-    fn the_relative_skin_wall_is_two_sided_and_gated_at_one_percent() {
-        // Ten pixels, three of them skin (30 %): chroma 20, hue near 50 degrees.
-        let skin_px = |c: f64, h: f64| {
-            let (a, b) = (c * h.to_radians().cos(), c * h.to_radians().sin());
-            px(60.0, a, b)
-        };
-        let p: Vec<Px> = (0..10)
-            .map(|i| {
-                if i < 3 {
-                    skin_px(20.0, 50.0)
-                } else {
-                    px(50.0, 0.0, 0.0)
-                }
-            })
-            .collect();
-        let mask: Vec<bool> = (0..10).map(|i| i < 3).collect();
-        let ex = extra_for(&p, &mask, None);
-        assert_eq!(
-            skin_relative_wall(&ex, &p),
-            0.0,
-            "the photo itself costs nothing"
-        );
-        let mut halved = p.clone();
-        let mut doubled = p.clone();
-        let mut turned = p.clone();
-        for i in 0..3 {
-            halved[i] = skin_px(10.0, 50.0);
-            doubled[i] = skin_px(40.0, 50.0);
-            turned[i] = skin_px(20.0, 80.0);
-        }
-        // Halved chroma (below the 0.65 line), doubled chroma (above 1.2) and a 30 degree turn (above 8) all cost; both directions.
-        assert!(skin_relative_wall(&ex, &halved) > 0.0);
-        assert!(skin_relative_wall(&ex, &doubled) > 0.0);
-        assert!(skin_relative_wall(&ex, &turned) > 0.0);
-        // Skin under 1 % of the sample is not guarded (H2 would test it only from 1 % of the frame; the gate is the harm's own).
-        let tiny = extra_for(&p, &[false; 10], None);
-        assert_eq!(skin_relative_wall(&tiny, &halved), 0.0);
-    }
-
-    #[test]
-    fn the_whites_licence_follows_the_reference_whites_and_gives_none_without_them() {
-        // Four of ten pixels are non-skin whites with C* 2.
-        let p: Vec<Px> = (0..10)
-            .map(|i| {
-                if i < 4 {
-                    px(90.0, 2.0, 0.0)
-                } else {
-                    px(40.0, 10.0, 10.0)
-                }
-            })
-            .collect();
-        let tinted = |c: f64| -> Vec<Px> {
-            (0..10)
-                .map(|i| {
-                    if i < 4 {
-                        px(90.0, c, 0.0)
-                    } else {
-                        px(40.0, 10.0, 10.0)
-                    }
-                })
-                .collect()
-        };
-        let none = extra_for(&p, &[false; 10], None);
-        // No whites in the reference: the photo's own chroma plus the 1 point of slack.
-        assert_eq!(whites_licence_wall(&none, &tinted(3.0)), 0.0);
-        assert!(whites_licence_wall(&none, &tinted(6.0)) > 0.0);
-        // A reference whose whites have C* 6 licenses up to 6 (and never more than 3 above the photo's 2) plus the slack.
-        let some = extra_for(&p, &[false; 10], Some(6.0));
-        assert_eq!(whites_licence_wall(&some, &tinted(5.5)), 0.0);
-        assert!(whites_licence_wall(&some, &tinted(8.0)) > 0.0);
-        let huge = extra_for(&p, &[false; 10], Some(20.0));
-        assert!(
-            whites_licence_wall(&huge, &tinted(9.0)) > 0.0,
-            "capped at the photo's plus 3"
-        );
     }
 
     #[test]

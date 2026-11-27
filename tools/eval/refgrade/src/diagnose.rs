@@ -149,13 +149,14 @@ pub fn diagnose(opts: &DiagOpts) -> Result<()> {
                 cands
                     .render(&[0.0; N_PARAMS], &mut p_px)
                     .map_err(|_| anyhow!("the photo could not be rendered"))?;
-                let fixed = Fixed::new(
+                let fixed = Fixed::with_coverage(
                     &net,
                     &p_px,
                     &photo.scene,
                     &refm.px,
                     &refm.scene,
                     base.skin_protection,
+                    photo.coverage,
                 )
                 .map_err(|e| anyhow!("{e}"))?;
                 let setup = FitSetup {

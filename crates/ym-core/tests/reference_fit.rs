@@ -651,6 +651,26 @@ fn the_evaluation_photo_has_every_pixel_and_agrees_with_the_fits_sample() {
     let mut ident = vec![Px::default(); b.sample_len()];
     b.render(&[0.0; 49], &mut ident).expect("a render");
     assert!(pb.iter().zip(&ident).any(|(p, q)| p != q));
+    // The coverage the skin and whites walls are gated by (RG-13) is counted on every pixel of the analysis picture, with the node at
+    // its identity: the same shares the whole-picture render gives, from either photo.
+    let n = ident.len() as f64;
+    let whites = ident
+        .iter()
+        .filter(|q| ym_color::refgrade::objective::is_white(q))
+        .count() as f64
+        / n;
+    let skin = full.scene.skin.iter().filter(|&&s| s).count() as f64 / n;
+    assert_eq!(full.coverage, sampled.coverage);
+    assert!(
+        (sampled.coverage.skin - skin).abs() < 1e-12,
+        "{:?}",
+        sampled.coverage
+    );
+    assert!(
+        (sampled.coverage.whites - whites).abs() < 2e-3,
+        "{:?} against {whites}",
+        sampled.coverage
+    );
     // The reference side: nothing before a reference is chosen, then every pixel of its analysis picture.
     assert_eq!(
         r.core.reference_measured(r.ids[0], 2, &cancel).unwrap_err(),

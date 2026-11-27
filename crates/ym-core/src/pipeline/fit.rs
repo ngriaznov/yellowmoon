@@ -12,21 +12,26 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use ym_color::display::{ColorChain, OutputTarget, PlanState};
+use ym_color::mask::NodeMasks;
 use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, RasterPlanes};
 use ym_color::mask_element::{ElementJob, ElementScene, FIT_MIN_SHARE, soft_masks};
 use ym_color::mask_raster::Area;
-use ym_color::refgrade::measure::PixelScene;
+use ym_color::refgrade::measure::{LabConv, PixelScene};
+use ym_color::refgrade::objective::{Coverage, is_white};
+use ym_color::refgrade::params::to_numbers;
 use ym_color::refgrade::{ANALYSIS_LONG_EDGE_PX, sample_pixels};
 use ym_gpu::cpu::sampler::GridPositions;
 use ym_gpu::queue::{CancelToken, Priority};
 
 use super::RenderError;
 use super::color::PhotoSource;
+use super::color::reference_node_params;
 use super::frame::{ViewSpec, sample_view_routed};
 use super::geometry::Affine;
 use super::graph::{Job, Renderer};
 use super::thumbs::{thumbnail_scale, thumbnail_size};
-use crate::settings::NodeKind;
+use crate::reference_fit::apply_numbers;
+use crate::settings::{NodeKind, ReferenceGradeNode};
 
 /// The soft masks of the seven elements over the analysis picture, for the elements that cover enough of it (`None`: no mask).
 #[derive(Debug, Clone)]
@@ -79,6 +84,9 @@ pub struct FitPhoto {
     pub mask_ok: [bool; 7],
     /// Whether skin could be looked for (the skin network was there when the scene was made).
     pub skin_available: bool,
+    /// The share of the analysis picture, **every pixel of it**, that is skin and that is whites as H4 reads them (with the node at its
+    /// identity): the coverage the skin and whites walls are gated by (`docs/34` section 5.4), not the 8192-pixel sample's estimate.
+    pub coverage: Coverage,
 }
 
 impl std::fmt::Debug for FitPhoto {
@@ -172,6 +180,12 @@ impl Renderer {
                 hue_vs_sat: Vec::new(),
             };
         }
+        let base = src
+            .settings
+            .nodes
+            .reference_grade(node)
+            .cloned()
+            .ok_or_else(|| RenderError::Color("The node is gone.".to_owned()))?;
         let placeholder = src.with_settings(settings);
         let renderer = self.snapshot_renderer()?;
         #[cfg(feature = "eval-scene")]
@@ -182,6 +196,7 @@ impl Renderer {
             skin_available,
             cancel,
             every_pixel,
+            &base,
             eval.as_ref().zip(self.scene_model()),
         );
         #[cfg(not(feature = "eval-scene"))]
@@ -192,6 +207,7 @@ impl Renderer {
             skin_available,
             cancel,
             every_pixel,
+            &base,
         );
         renderer.forget(src.id);
         result
@@ -206,6 +222,7 @@ impl Renderer {
         skin_available: bool,
         cancel: &CancelToken,
         every_pixel: bool,
+        base: &ReferenceGradeNode,
         #[cfg(feature = "eval-scene")] eval: super::eval_scene::Active<'_>,
     ) -> Result<FitPhoto, RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
@@ -346,6 +363,15 @@ impl Renderer {
             );
         }
         let mask_ok = std::array::from_fn(|e| covering[e] && planes[e].is_some());
+        let coverage = analysis_coverage(
+            &chain,
+            node,
+            base,
+            (width, height),
+            &camera,
+            &spot_for,
+            scene,
+        )?;
         // The class of the photo's own element at the sample is the scene's; an element with no mask has no local grade.
         Ok(FitPhoto {
             width,
@@ -363,6 +389,57 @@ impl Renderer {
             }),
             mask_ok,
             skin_available,
+            coverage,
         })
     }
+}
+
+/// The skin and whites coverage of the analysis picture: the share of **every pixel** that is skin in the scene, and that is white as
+/// H4 reads it (L\* at least 80, C\* under 8) with the node at its identity, as `ChainCandidates` renders the photo at `x = 0`.
+/// Integer counts, so the result is the same on any number of threads.
+fn analysis_coverage(
+    chain: &ColorChain,
+    node: u32,
+    base: &ReferenceGradeNode,
+    (width, height): (usize, usize),
+    camera: &(impl Fn(usize) -> [f64; 3] + Sync),
+    spot_for: &impl Fn(usize, usize) -> PhotoSpot<'static>,
+    scene: &ElementScene,
+) -> Result<Coverage, RenderError> {
+    let mut identity = base.clone();
+    identity.bypass = false;
+    identity.strength = 100.0;
+    apply_numbers(
+        &mut identity,
+        &to_numbers(&[0.0; ym_color::refgrade::N_PARAMS]),
+    );
+    let params = reference_node_params(&identity, NodeMasks::default())
+        .map_err(|e| RenderError::Color(format!("{e:?}")))?;
+    let mut at_identity = chain.clone();
+    at_identity
+        .replace_node(node, &params)
+        .map_err(|e| RenderError::Color(format!("{e:?}")))?;
+    let spots: Vec<PhotoSpot<'static>> = (0..width * height)
+        .map(|i| spot_for(i % width, i / width))
+        .collect();
+    let skin = spots.iter().filter(|s| scene.class_at(s.pos).1).count();
+    let conv = LabConv::new();
+    let whites: usize = spots
+        .par_iter()
+        .enumerate()
+        .map(|(i, spot)| {
+            let Some(state) = chain.state_before_node(camera(i), Some(*spot), node) else {
+                return 0;
+            };
+            let codes = at_identity
+                .codes_from_node(&state, Some(*spot), node)
+                .unwrap_or([0.0; 3]);
+            usize::from(is_white(&conv.px_of_codes(codes)))
+        })
+        .sum();
+    let n = (width * height).max(1) as f64;
+    Ok(Coverage {
+        skin: skin as f64 / n,
+        whites: whites as f64 / n,
+    })
 }

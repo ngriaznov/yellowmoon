@@ -10,8 +10,9 @@ use super::measure::{
 };
 use super::network::{NETWORK_TEXT, Network, NetworkErrorKind, NetworkValues, input_names};
 use super::objective::{
-    Fixed, Terms, allowed_turn_deg, candidate_measure, clip_allowance, clip_over, clip_term,
-    content_turn_share, terms, turn_weight,
+    Coverage, Fixed, Terms, allowed_turn_deg, candidate_measure, clip_allowance, clip_over,
+    clip_term, content_turn_share, h4_inner_limit, is_white, licence_allowed,
+    skin_chroma_down_limit, skin_chroma_up_limit, skin_hue_limit_deg, terms, turn_weight,
 };
 use super::params::{N_PARAMS, Params, to_numbers};
 use super::search::{CandidateRenderer, FitError, FitSetup, Refused, Start, fit};
@@ -697,7 +698,7 @@ fn the_look_only_total_is_the_full_total_minus_the_walls_and_the_clip_term() {
 }
 
 #[test]
-fn skin_protection_switches_the_three_skin_walls_and_nothing_else() {
+fn skin_protection_switches_the_two_skin_walls_and_nothing_else() {
     let pr = pair();
     let on = fixed_for(&pr, true);
     let off = fixed_for(&pr, false);
@@ -712,20 +713,16 @@ fn skin_protection_switches_the_three_skin_walls_and_nothing_else() {
     let c_off = candidate_measure(&cand, &pr.scene, &off);
     let (t_on, t_off) = (terms(&c_on, &on), terms(&c_off, &off));
     assert!(
-        t_on.guard_skin > 0.0 && t_on.guard_skin_drift > 0.0 && t_on.guard_skin_chroma > 0.0,
+        t_on.guard_skin_drift > 0.0 && t_on.guard_skin_chroma > 0.0,
         "{:?}",
         t_on.named()
     );
     assert_eq!(
-        (
-            t_off.guard_skin,
-            t_off.guard_skin_drift,
-            t_off.guard_skin_chroma
-        ),
-        (0.0, 0.0, 0.0)
+        (t_off.guard_skin_drift, t_off.guard_skin_chroma),
+        (0.0, 0.0)
     );
     // Every other term is the same.
-    let rest = |t: &Terms| t.total() - t.guard_skin - t.guard_skin_drift - t.guard_skin_chroma;
+    let rest = |t: &Terms| t.total() - t.guard_skin_drift - t.guard_skin_chroma;
     assert!((rest(&t_on) - rest(&t_off)).abs() < 1e-12);
 }
 
@@ -1195,4 +1192,287 @@ fn a_cancel_stops_both_searches_and_a_refusing_chain_is_a_failure() {
         fit_parallel(&setup, &mut refusing, &mut other, &|| false, &mut |_| {}).unwrap_err(),
         FitError::ChainRefused
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// RG-13: the skin walls measure what H2 measures, the whites walls what H4 measures
+// ---------------------------------------------------------------------------------------------
+
+/// The skin of `cand` moved: its (a\*, b\*) and Oklab (a, b) turned by `turn_deg` and scaled by `scale`.
+fn skin_moved(pr: &Pair, turn_deg: f64, scale: f64) -> Vec<Px> {
+    let (sn, cs) = turn_deg.to_radians().sin_cos();
+    pr.p_px
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            if !pr.scene.skin[i] {
+                return *q;
+            }
+            let (a, b) = (q.lab[1], q.lab[2]);
+            let lab = [
+                q.lab[0],
+                scale * (a * cs - b * sn),
+                scale * (a * sn + b * cs),
+            ];
+            px_of(
+                lab,
+                [q.ok[0] * cs - q.ok[1] * sn, q.ok[0] * sn + q.ok[1] * cs],
+            )
+        })
+        .collect()
+}
+
+fn skin_walls(pr: &Pair, f: &Fixed, cand: &[Px]) -> (f64, f64) {
+    let t = terms(&candidate_measure(cand, &pr.scene, f), f);
+    (t.guard_skin_drift, t.guard_skin_chroma)
+}
+
+#[test]
+fn the_inner_limits_are_eight_tenths_of_h2s_lines() {
+    assert!((skin_chroma_down_limit() - (1.0f64 / 0.55).ln() * 0.8).abs() < 1e-12);
+    // Ratios 0.620 and 1.195.
+    assert!(((-skin_chroma_down_limit()).exp() - 0.620).abs() < 5e-4);
+    let pr = pair();
+    let f = fixed_for(&pr, true);
+    assert!(
+        (skin_chroma_up_limit(&f.t).exp() - 1.195).abs() < 5e-3
+            || skin_chroma_up_limit(&f.t) <= 0.30
+    );
+    assert!(skin_hue_limit_deg(&f.t) <= 8.0 && skin_hue_limit_deg(&f.t) >= 6.0);
+    assert!(skin_chroma_up_limit(&f.t) <= 0.8 * 1.25f64.ln() + 1e-12);
+}
+
+#[test]
+fn the_skin_walls_are_two_sided_in_chroma_and_inside_h2s_lines() {
+    let pr = pair();
+    let f = fixed_for(&pr, true);
+    // Inside the inner limits: nothing. Chroma 0.7 and 1.05 of the photo's, hue turned 4 degrees.
+    assert_eq!(skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 0.7)), (0.0, 0.0));
+    assert_eq!(skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 1.05)), (0.0, 0.0));
+    assert_eq!(skin_walls(&pr, &f, &skin_moved(&pr, 4.0, 1.0)), (0.0, 0.0));
+    // Outside, on either side: the chroma wall fires below 0.620 and above the up limit, and the hue wall past the hue limit. All of them
+    // are moves H2 would flag at the next step (0.55, 1.25, 10 degrees), so the wall is in front of the line.
+    assert!(
+        skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 0.5)).1 > 0.0,
+        "falls"
+    );
+    assert!(
+        skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 1.5)).1 > 0.0,
+        "rises"
+    );
+    assert!(
+        skin_walls(&pr, &f, &skin_moved(&pr, 12.0, 1.0)).0 > 0.0,
+        "turns"
+    );
+    assert!(
+        skin_walls(&pr, &f, &skin_moved(&pr, -12.0, 1.0)).0 > 0.0,
+        "turns the other way"
+    );
+    // A fall of the chroma to nothing costs more than a fall to 0.5.
+    assert!(
+        skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 0.05)).1
+            > skin_walls(&pr, &f, &skin_moved(&pr, 0.0, 0.5)).1
+    );
+}
+
+#[test]
+fn the_skin_walls_start_at_one_percent_of_the_frame_on_the_analysis_picture() {
+    let pr = pair();
+    let moved = skin_moved(&pr, 12.0, 0.4);
+    let at = |skin: f64| {
+        let f = Fixed::with_coverage(
+            &shipped(),
+            &pr.p_px,
+            &pr.scene,
+            &pr.r_px,
+            &pr.r_scene,
+            true,
+            Coverage { skin, whites: 0.1 },
+        )
+        .unwrap();
+        skin_walls(&pr, &f, &moved)
+    };
+    // The gate is the coverage given (the analysis picture's), not the sample's own share of 10 %.
+    assert_eq!(at(0.009), (0.0, 0.0));
+    let (hue, chroma) = at(0.011);
+    assert!(hue > 0.0 && chroma > 0.0);
+    // With Fixed::new the coverage is the sample's own.
+    let f = fixed_for(&pr, true);
+    assert!((f.coverage.skin - 0.10).abs() < 0.02);
+    assert!(skin_walls(&pr, &f, &moved).0 > 0.0);
+}
+
+#[test]
+fn there_is_no_absolute_band_for_the_skin() {
+    // A photo whose skin is green and nearly grey: outside the old band (CIELAB hue 30 to 70, C* 12 to 38) in hue and in chroma.
+    let mut pr = pair();
+    for (i, q) in pr.p_px.iter_mut().enumerate() {
+        if pr.scene.skin[i] {
+            *q = px_of([q.lab[0], -14.0, 8.0], [-0.04, 0.02]);
+        }
+    }
+    pr.r_px.clone_from(&pr.p_px);
+    let f = fixed_for(&pr, true);
+    let c = candidate_measure(&pr.p_px, &pr.scene, &f);
+    let t = with_regularisers(terms(&c, &f), &f, &c);
+    assert_eq!(
+        t.total(),
+        0.0,
+        "the photo as shot costs nothing: {:?}",
+        t.named()
+    );
+    assert!(t.named().iter().all(|(k, _)| *k != "guard_skin"));
+    // And dragging it into the old band costs: the wall is on the move, not on the place.
+    let into_band: Vec<Px> = pr
+        .p_px
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            if pr.scene.skin[i] {
+                px_of([q.lab[0], 14.0, 16.0], [0.04, 0.06])
+            } else {
+                *q
+            }
+        })
+        .collect();
+    let (hue, chroma) = skin_walls(&pr, &f, &into_band);
+    assert!(hue > 0.0 || chroma > 0.0);
+}
+
+#[test]
+fn the_licence_is_the_references_whites_at_most_three_above_the_photos_plus_one() {
+    assert_eq!(licence_allowed(2.0, 6.0), 6.0); // max(2, min(6, 5)) + 1
+    assert_eq!(licence_allowed(2.0, 3.0), 4.0); // max(2, min(3, 5)) + 1
+    assert_eq!(licence_allowed(2.0, 2.0), 3.0); // r = p: nothing but the margin
+    assert_eq!(licence_allowed(5.0, 1.0), 6.0); // a reference with less never asks the photo to lose chroma
+    // The inner limit of H4's line: 0.8 of max(8, the reference's own whites + 4).
+    assert!((h4_inner_limit(0.0) - 6.4).abs() < 1e-12);
+    assert!((h4_inner_limit(3.0) - 6.4).abs() < 1e-12);
+    assert!((h4_inner_limit(10.0) - 11.2).abs() < 1e-12);
+}
+
+/// A photo whose whites (the architecture pixels) have (a\*, b\*) = (`a`, `b`) at L\* 92, and a reference made of it with its whites
+/// given by `ref_whites` ((a\*, b\*) and the share of the whites kept white), the rest of the reference strongly coloured.
+fn whites_pair(a: f64, b: f64, ref_whites: Option<[f64; 2]>) -> Pair {
+    let mut pr = pair();
+    for (i, q) in pr.p_px.iter_mut().enumerate() {
+        if pr.scene.class[i] == class::ARCHITECTURE {
+            *q = px_of([92.0, a, b], [a / 100.0, b / 100.0]);
+        }
+    }
+    pr.r_px = pr
+        .p_px
+        .iter()
+        .enumerate()
+        .map(
+            |(i, q)| match (pr.scene.class[i] == class::ARCHITECTURE, ref_whites) {
+                (true, Some(w)) => px_of([92.0, w[0], w[1]], [w[0] / 100.0, w[1] / 100.0]),
+                (true, None) => px_of([92.0, 14.0, 20.0], [0.14, 0.2]),
+                _ => *q,
+            },
+        )
+        .collect();
+    pr
+}
+
+fn whites_wall(pr: &Pair, f: &Fixed, a: f64, b: f64) -> f64 {
+    let cand: Vec<Px> = pr
+        .p_px
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            if pr.scene.class[i] == class::ARCHITECTURE {
+                px_of([92.0, a, b], [a / 100.0, b / 100.0])
+            } else {
+                *q
+            }
+        })
+        .collect();
+    terms(&candidate_measure(&cand, &pr.scene, f), f).guard_whites
+}
+
+#[test]
+fn a_reference_with_no_whites_licenses_the_photo_only_the_margin() {
+    // The photo's whites have C* 3; the reference has none (its pixels there are coloured).
+    let pr = whites_pair(1.2, 2.75, None);
+    let f = fixed_for(&pr, true);
+    let l = f.licence;
+    assert!(l.on);
+    assert!(is_white(&pr.p_px[800]));
+    assert!((l.photo_c - 1.2f64.hypot(2.75)).abs() < 0.05, "{l:?}");
+    assert_eq!(l.reference_c, l.photo_c, "no whites of its own: r = p");
+    assert!((l.allowed - (l.photo_c + 1.0)).abs() < 1e-9);
+    assert!((l.cap - l.allowed).abs() < 1e-9);
+    // The targets follow it: the cap is the licence, whatever the network asked for.
+    assert_eq!(f.t.hl_cmax, l.cap);
+    assert!(whites_wall(&pr, &f, 1.2, 2.75) == 0.0);
+    // C* 5 is above the licence (3 + 1): the cap wall fires; C* 3.8 is not.
+    assert!(whites_wall(&pr, &f, 2.0, 4.6) > 0.0);
+    assert_eq!(whites_wall(&pr, &f, 1.4, 3.5), 0.0);
+}
+
+#[test]
+fn a_reference_with_whites_of_its_own_licenses_them_up_to_three_above_the_photos() {
+    // The reference's whites (at a quarter of the frame) have C* 4.5; the photo's, 2.
+    let pr = whites_pair(0.5, 1.94, Some([1.5, 4.24]));
+    let f = fixed_for(&pr, true);
+    let l = f.licence;
+    assert!((l.reference_c - 1.5f64.hypot(4.24)).abs() < 0.05);
+    let want = licence_allowed(l.photo_c, l.reference_c);
+    assert!((l.allowed - want).abs() < 1e-9);
+    assert!(l.allowed > l.photo_c + 1.0, "more than the margin: {l:?}");
+    assert!((l.cap - l.allowed).abs() < 1e-9);
+    assert_eq!(
+        whites_wall(&pr, &f, 1.5, 3.9),
+        0.0,
+        "at the reference's own whites"
+    );
+    assert!(whites_wall(&pr, &f, 3.0, 6.5) > 0.0, "past the licence");
+}
+
+#[test]
+fn the_cap_stays_under_the_inner_limit_of_h4s_line_and_the_targets_never_ask_for_more() {
+    // Whites of C* 5.8, a reference with none: the licence would be 6.8, but H4's inner limit is 6.4 (0.8 of 8).
+    let pr = whites_pair(2.0, 5.44, None);
+    let f = fixed_for(&pr, true);
+    let l = f.licence;
+    assert!((l.allowed - (l.photo_c + 1.0)).abs() < 1e-9 && l.allowed > l.inner);
+    assert!((l.cap - 6.4).abs() < 1e-9 && l.cap < 8.0, "{l:?}");
+    assert_eq!(f.t.hl_cmax, 6.4);
+    // The white target and the highlights band of the tint term are within the licence's extra chroma of the photo's own.
+    let n = f.p.tint[2];
+    let extra = l.cap - l.photo_c;
+    let tint = f.t.tint[2];
+    assert!((tint[0] - n[0]).hypot(tint[1] - n[1]) <= extra + 1e-9);
+    // The photo's own whites cost nothing in the direction wall: the tolerance covers them.
+    let c = candidate_measure(&pr.p_px, &pr.scene, &f);
+    assert_eq!(terms(&c, &f).guard_white_direction, 0.0);
+    // A photo whose own whites are above the line is never asked to lose chroma: the cap is at least the photo's own.
+    let pr = whites_pair(4.0, 9.0, None);
+    let f = fixed_for(&pr, true);
+    assert!(f.licence.cap >= f.licence.photo_c - 1e-9);
+}
+
+#[test]
+fn the_whites_guard_starts_at_one_percent_of_the_frame_on_the_analysis_picture() {
+    let pr = whites_pair(1.2, 2.75, None);
+    let at = |whites: f64| {
+        Fixed::with_coverage(
+            &shipped(),
+            &pr.p_px,
+            &pr.scene,
+            &pr.r_px,
+            &pr.r_scene,
+            true,
+            Coverage { skin: 0.1, whites },
+        )
+        .unwrap()
+    };
+    let (off, on) = (at(0.009), at(0.011));
+    assert!(!off.licence.on && on.licence.on);
+    assert_eq!(whites_wall(&pr, &off, 3.0, 7.0), 0.0, "shut under 1 %");
+    assert!(whites_wall(&pr, &on, 3.0, 7.0) > 0.0);
+    // The targets are the network's own where the guard does not exist.
+    assert_eq!(off.t.hl_cmax, off.net_values.get("T.hl_cmax"));
+    assert_eq!(on.t.hl_cmax, on.licence.cap);
 }

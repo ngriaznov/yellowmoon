@@ -535,13 +535,14 @@ pub fn fit_node(
         .map_err(|_| {
             FitFailure::Failed("The photo could not be rendered for the fit.".to_owned())
         })?;
-    let fixed = Fixed::new(
+    let fixed = Fixed::with_coverage(
         net,
         &p_px,
         &photo.scene,
         &r_px,
         &r_scene,
         base.skin_protection,
+        photo.coverage,
     )
     .map_err(|e| FitFailure::Failed(e.to_string()))?;
     let setup = FitSetup {
@@ -577,7 +578,7 @@ pub fn fit_node(
             );
         }
     }
-    if base.skin_protection && fixed.p.el[5].share < ym_color::refgrade::measure::PRESENT_SHARE {
+    if base.skin_protection && fixed.coverage.skin < ym_color::refgrade::objective::HARM_COVERAGE {
         notes.push("No skin was found, so Skin protection did nothing.".to_owned());
     }
     let result = fit_parallel(
@@ -821,7 +822,7 @@ impl Core {
         };
         let skin_found = found
             .last()
-            .is_some_and(|e| e.photo_share >= ym_color::refgrade::measure::PRESENT_SHARE);
+            .is_some_and(|e| e.photo_share >= ym_color::refgrade::objective::HARM_COVERAGE);
         Ok(FitOutcome {
             status,
             notes,

@@ -67,17 +67,52 @@ const PURPLE_MIN_C: f64 = 4.0;
 const PURPLE_FROM_C: f64 = 2.0;
 /// The pixel guard: weight and scale.
 const PURPLE_PIXELS: (f64, f64) = (6.0, 0.01);
-/// The skin walls' weight, the scale of the hue and chroma excess of the absolute wall, the scale of the drift wall and of the
-/// chroma wall.
+/// The skin walls' weight, the scale of the hue wall (degrees) and of the chroma wall (log ratio).
 const SKIN_WEIGHT: f64 = 12.0;
-const SKIN_ABSOLUTE_SCALE: f64 = 3.0;
 const SKIN_DRIFT_SCALE: f64 = 3.0;
 const SKIN_CHROMA_SCALE: f64 = 0.05;
-/// Skin's range of hue (degrees) and chroma in the absolute wall.
-const SKIN_HUE: (f64, f64) = (30.0, 70.0);
-const SKIN_CHROMA: (f64, f64) = (12.0, 38.0);
-/// The skin chroma wall needs this share of the photo.
-const SKIN_CHROMA_MIN_SHARE: f64 = 0.01;
+/// A mean-vector chroma is taken as at least this in a ratio (H2 divides by the photo's, with a floor of 1e-9).
+const SKIN_CHROMA_FLOOR: f64 = 1e-6;
+/// **The inner limit of a harm line** (`docs/34` section 5.4, RG-13): the line pulled in to this fraction of its distance from no
+/// change. A wall steers and a line judges, so a wall sits inside its line.
+pub const INNER_FRACTION: f64 = 0.8;
+/// H2's hue line, in degrees, and the chroma-ratio lines (`tools/eval/refgrade`: `harms`).
+pub const H2_HUE_LINE_DEG: f64 = 10.0;
+/// H2 flags a skin chroma ratio (fit over photo) above this ...
+pub const H2_CHROMA_UP_LINE: f64 = 1.25;
+/// ... or below this.
+pub const H2_CHROMA_DOWN_LINE: f64 = 0.55;
+/// H2 tests the skin's hue only when its mean-vector C\* is at least this.
+pub const H2_HUE_MIN_CHROMA: f64 = 4.0;
+/// The share of the frame (analysis picture) H2 tests skin from, and H4 tests whites from: the walls exist from the same coverage.
+pub const HARM_COVERAGE: f64 = 0.01;
+/// H4's lines: whites' mean C\* above `max(H4_FLOOR_CHROMA, the reference's own whites' mean C* + H4_REFERENCE_MARGIN)`.
+pub const H4_FLOOR_CHROMA: f64 = 8.0;
+/// See [`H4_FLOOR_CHROMA`].
+pub const H4_REFERENCE_MARGIN: f64 = 4.0;
+/// The licence's step above the photo's own whites chroma, and its margin.
+const LICENCE_STEP: f64 = 3.0;
+const LICENCE_MARGIN: f64 = 1.0;
+/// The most the skin's hue may turn, in degrees: the inner limit of H2's line. The network's `T.skin_drift` (6 degrees, 10 when the
+/// reference's skin is matched) is read as far as this.
+#[must_use]
+pub fn skin_hue_limit_deg(t: &Targets) -> f64 {
+    t.skin_drift.min(INNER_FRACTION * H2_HUE_LINE_DEG)
+}
+
+/// The most the skin's log chroma ratio may rise: the network's `T.skin_dlogC_max` (0.12, 0.30 when matched) as far as the inner limit
+/// of H2's line, `0.8 ln 1.25` (ratio 1.195).
+#[must_use]
+pub fn skin_chroma_up_limit(t: &Targets) -> f64 {
+    t.skin_dlogc_max
+        .min(INNER_FRACTION * H2_CHROMA_UP_LINE.ln())
+}
+
+/// The most the skin's log chroma ratio may fall: the inner limit of H2's line, `0.8 ln (1 / 0.55)` (ratio 0.620).
+#[must_use]
+pub fn skin_chroma_down_limit() -> f64 {
+    INNER_FRACTION * (1.0 / H2_CHROMA_DOWN_LINE).ln()
+}
 /// The sky chroma wall: factor, weight and scale.
 const SKY_FACTOR: f64 = 1.3;
 const SKY_WEIGHT: f64 = 2.0;
@@ -272,6 +307,75 @@ impl Targets {
     }
 }
 
+/// How much of the photo's frame (the 512 px analysis picture, **every pixel**, not the 8192-pixel sample) is skin, and how much is whites as
+/// H4 reads them: the coverage the harms H2 and H4 are tested at, which the skin and whites walls are gated by (`docs/34` section 5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Coverage {
+    /// The share of the frame that is skin (the scene's skin plane).
+    pub skin: f64,
+    /// The share of the frame with L\* at least 80 and C\* under 8 (H4's whites, skin included).
+    pub whites: f64,
+}
+
+impl Coverage {
+    /// The coverage as the sample estimates it: for tests and for a caller with no analysis picture. The fit takes the analysis
+    /// picture's own (`FitPhoto::coverage` in `ym-core`).
+    #[must_use]
+    pub fn of_sample(px: &[Px], scene: &PixelScene) -> Self {
+        let n = px.len().max(1) as f64;
+        let skin = scene.skin.iter().filter(|&&s| s).count() as f64 / n;
+        let whites = px.iter().filter(|q| is_white(q)).count() as f64 / n;
+        Self { skin, whites }
+    }
+}
+
+/// A pixel as H4 reads a white: L\* at least 80 and C\* under 8.
+#[must_use]
+pub fn is_white(q: &Px) -> bool {
+    q.lab[0] >= WHITES_L_MIN && q.chroma < WHITES_PIXEL_C_MAX
+}
+
+/// The whites licence of one pair (`docs/34` section 5.4, P2 of RG-13): how much chroma the reference lets the photo's whites take.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Licence {
+    /// Whether the whites guard exists: the photo's whites are at H4's coverage (1 % of the frame) and the sample holds some.
+    pub on: bool,
+    /// The photo's whites' mean per-pixel C\* (`p`).
+    pub photo_c: f64,
+    /// The reference's whites' mean C\* when they are at H4's coverage, else `p` (`r`).
+    pub reference_c: f64,
+    /// `max(p, min(r, p + 3)) + 1`.
+    pub allowed: f64,
+    /// The inner limit of H4's line: `0.8 * max(8, the reference's own whites' mean C* + 4)`.
+    pub inner: f64,
+    /// The cap the walls and the targets use: `max(p, min(allowed, inner))`.
+    pub cap: f64,
+}
+
+/// `max(p, min(r, p + 3)) + 1`: the chroma a reference with whites of chroma `r` lets a photo with whites of chroma `p` take.
+#[must_use]
+pub fn licence_allowed(p: f64, r: f64) -> f64 {
+    p.max(r.min(p + LICENCE_STEP)) + LICENCE_MARGIN
+}
+
+/// The inner limit of H4's line for a reference whose own whites (any number of them) have mean C\* `reference_own_c` (0 for none).
+#[must_use]
+pub fn h4_inner_limit(reference_own_c: f64) -> f64 {
+    INNER_FRACTION * H4_FLOOR_CHROMA.max(reference_own_c + H4_REFERENCE_MARGIN)
+}
+
+/// Moves `target` toward `from` until it is at most `reach` away (a vector step); `target` itself when it is nearer.
+fn limit_step(from: [f64; 2], target: [f64; 2], reach: f64) -> [f64; 2] {
+    let d = [target[0] - from[0], target[1] - from[1]];
+    let len = d[0].hypot(d[1]);
+    if len <= reach || len == 0.0 {
+        target
+    } else {
+        let k = reach.max(0.0) / len;
+        [from[0] + d[0] * k, from[1] + d[1] * k]
+    }
+}
+
 /// Everything fixed for one pair: the photo's and the reference's measures, the network's answer and the groups of the photo's own
 /// sample pixels the walls look at.
 #[derive(Debug, Clone)]
@@ -286,12 +390,15 @@ pub struct Fixed {
     pub t: Targets,
     /// The network's neuron values (every neuron, in file order), kept for reports.
     pub net_values: NetworkValues,
-    /// Whether the three skin walls are on (`docs/34` section 5.6).
+    /// Whether the two skin walls are on (`docs/34` section 5.6).
     pub skin_protection: bool,
+    /// The photo's skin and whites coverage on the analysis picture: what the skin and whites walls are gated by.
+    pub coverage: Coverage,
+    /// The whites licence of this pair.
+    pub licence: Licence,
     sector: Vec<u8>,
     p_hue: Vec<f64>,
     p_sec_logc: [f64; SECTORS],
-    hl_scope: Vec<bool>,
     p_hl_ab: [f64; 2],
     p_sec_ab: [[f64; 2]; SECTORS],
     dark_scope: Vec<bool>,
@@ -357,6 +464,28 @@ impl Fixed {
         r_scene: &PixelScene,
         skin_protection: bool,
     ) -> Result<Self, NetworkError> {
+        let coverage = Coverage::of_sample(p_px, scene);
+        Self::with_coverage(net, p_px, scene, r_px, r_scene, skin_protection, coverage)
+    }
+
+    /// [`Fixed::new`] with the photo's coverage measured on the analysis picture's every pixel (the fit's own).
+    ///
+    /// # Errors
+    ///
+    /// [`NetworkError`] when the network lacks an output the objective reads.
+    ///
+    /// # Panics
+    ///
+    /// When a picture is empty or its scene has another length.
+    pub fn with_coverage(
+        net: &Network,
+        p_px: &[Px],
+        scene: &PixelScene,
+        r_px: &[Px],
+        r_scene: &PixelScene,
+        skin_protection: bool,
+        coverage: Coverage,
+    ) -> Result<Self, NetworkError> {
         let p0 = measure(p_px, scene, &[false; 6]);
         let r0 = measure(r_px, r_scene, &[false; 6]);
         let excl = sector_exclusions(&p0, &r0);
@@ -365,7 +494,7 @@ impl Fixed {
         let values = network_inputs(&p, &r);
         let inputs: Vec<f64> = net.inputs().iter().map(|n| values[n]).collect();
         let net_values = net.eval(&inputs);
-        let t = Targets::read(net, &net_values)?;
+        let mut t = Targets::read(net, &net_values)?;
         // P's sectors, on the same pixels every candidate is measured on.
         let n = p_px.len();
         let mut sector = vec![255u8; n];
@@ -445,16 +574,51 @@ impl Fixed {
             }
         }
         let p_pg_ab = pg_means(p_px, &pg);
+        // The whites as H4 reads them: L* at least 80 and C* under 8, **skin included**, so the walls measure what the harm measures.
         let hl4_pixels: Vec<u32> = p_px
             .iter()
             .enumerate()
-            .filter(|&(i, q)| {
-                !scene.skin[i]
-                    && q.lab[0] >= WHITES_L_MIN
-                    && q.lab[1].hypot(q.lab[2]) < WHITES_PIXEL_C_MAX
-            })
+            .filter(|&(_, q)| is_white(q))
             .map(|(i, _)| i as u32)
             .collect();
+        // The whites licence and the targets that follow it.
+        let licence = {
+            let on = coverage.whites >= HARM_COVERAGE && !hl4_pixels.is_empty();
+            let p_c = whites_stats(p_px, &hl4_pixels, t.white).0;
+            let (r_n, r_sum) = r_px
+                .iter()
+                .filter(|q| is_white(q))
+                .fold((0usize, 0.0f64), |(n, s), q| (n + 1, s + q.chroma));
+            let r_own = if r_n == 0 { 0.0 } else { r_sum / r_n as f64 };
+            let r_share = r_n as f64 / r_px.len().max(1) as f64;
+            let reference_c = if r_share >= HARM_COVERAGE { r_own } else { p_c };
+            let allowed = licence_allowed(p_c, reference_c);
+            let inner = h4_inner_limit(r_own);
+            Licence {
+                on,
+                photo_c: p_c,
+                reference_c,
+                allowed,
+                inner,
+                cap: p_c.max(allowed.min(inner)),
+            }
+        };
+        if licence.on {
+            // The cap, the white target (and the tolerance that keeps the photo's own whites inside it) and the highlights band of the
+            // `tint` term never ask for more chroma in the photo's whites than the licence allows.
+            t.hl_cmax = licence.cap;
+            let (mut sa, mut sb) = (0.0, 0.0);
+            for &i in &hl4_pixels {
+                sa += p_px[i as usize].lab[1];
+                sb += p_px[i as usize].lab[2];
+            }
+            let nw = hl4_pixels.len() as f64;
+            let own = [sa / nw, sb / nw];
+            let extra = (licence.cap - licence.photo_c).max(0.0);
+            t.white = limit_step(own, t.white, extra);
+            t.white_tol = t.white_tol.max(whites_stats(p_px, &hl4_pixels, t.white).1);
+            t.tint[2] = limit_step(p.tint[2], t.tint[2], extra);
+        }
         // The photo's pixels a candidate's sectors and content turns are measured on, and each turn's allowance: all fixed by the
         // photo, so a candidate does not look at the rest.
         let sector_pixels: Vec<u32> = (0..n as u32)
@@ -476,10 +640,11 @@ impl Fixed {
             t,
             net_values,
             skin_protection,
+            coverage,
+            licence,
             sector,
             p_hue,
             p_sec_logc,
-            hl_scope,
             p_hl_ab,
             p_sec_ab,
             dark_scope,
@@ -744,8 +909,6 @@ pub struct Terms {
     pub frame_cast: f64,
     /// The hue-drift wall.
     pub guard_hue: f64,
-    /// The skin's absolute wall.
-    pub guard_skin: f64,
     /// The sky's chroma wall.
     pub guard_sky: f64,
     /// The whites' chroma cap and hue wall.
@@ -754,13 +917,13 @@ pub struct Terms {
     pub guard_purple: f64,
     /// The whites' direction wall.
     pub guard_white_direction: f64,
-    /// The skin's drift wall.
+    /// The skin's hue wall (the move of the skin's mean-vector hue from the photo's).
     pub guard_skin_drift: f64,
     /// The memory-colour wall.
     pub guard_memory: f64,
     /// The pixel guard of the purple wall.
     pub guard_purple_pixels: f64,
-    /// The skin's chroma wall.
+    /// The skin's chroma wall (the ratio of the skin's mean-vector chroma to the photo's, both ways).
     pub guard_skin_chroma: f64,
     /// The content turn budget.
     pub guard_turn: f64,
@@ -788,7 +951,6 @@ impl Terms {
             + (self.element_hue + self.element_chroma)
             + (self.element_exposure + self.subject)
             + self.guard_hue
-            + self.guard_skin
             + self.guard_sky
             + self.guard_whites
             + self.guard_purple
@@ -817,7 +979,6 @@ impl Terms {
         t.clip = 0.0;
         for v in [
             &mut t.guard_hue,
-            &mut t.guard_skin,
             &mut t.guard_sky,
             &mut t.guard_whites,
             &mut t.guard_purple,
@@ -837,7 +998,6 @@ impl Terms {
     #[must_use]
     pub fn walls_and_clip(&self) -> f64 {
         self.guard_hue
-            + self.guard_skin
             + self.guard_sky
             + self.guard_whites
             + self.guard_purple
@@ -868,7 +1028,6 @@ impl Terms {
             ("element_exposure", self.element_exposure),
             ("subject", self.subject),
             ("guard_hue", self.guard_hue),
-            ("guard_skin", self.guard_skin),
             ("guard_sky", self.guard_sky),
             ("guard_whites", self.guard_whites),
             ("guard_purple", self.guard_purple),
@@ -905,8 +1064,9 @@ pub fn terms(c: &CandidateMeasure, f: &Fixed) -> Terms {
     };
     {
         let (pe, me) = (&f.p.el[5], &m.el[5]);
-        if pe.share >= SKIN_CHROMA_MIN_SHARE && me.n > 0 {
-            t.skin_dlogc = (me.mv().1.max(1.0) / pe.mv().1.max(1.0)).ln();
+        if pe.n > 0 && me.n > 0 {
+            t.skin_dlogc =
+                (me.mv().1.max(SKIN_CHROMA_FLOOR) / pe.mv().1.max(SKIN_CHROMA_FLOOR)).ln();
         }
     }
     t.floor = FLOOR.2 * term(m.p2 - o.p2, FLOOR.0, FLOOR.1);
@@ -1034,19 +1194,20 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
             }
         }
     }
-    let n_hl = f.hl_scope.iter().filter(|&&s| s).count() as f64;
-    if n_hl >= WHITES_MIN_SHARE * n {
+    // The whites guard exists from H4's coverage (whites at 1 % of the frame, analysis picture). Its cap, direction and target follow the
+    // reference's licence (`Fixed::licence`).
+    if f.licence.on {
         let (_, pc) = vec_hc(f.p_hl_ab);
-        // The cap is on the mean per-pixel chroma of the whites.
+        // The cap is on the mean per-pixel chroma of the whites as H4 reads them.
         t.guard_whites = WHITES_CAP.0 * sq((c.hl4_c - o.hl_cmax).max(0.0) / WHITES_CAP.1);
-        if pc >= WHITES_HUE_MIN_C {
+        if pc >= WHITES_HUE_MIN_C && !f.pg[PG_WHITES].is_empty() {
             let (ph, ch) = hues(PG_WHITES);
             t.guard_whites += drift(wrap_deg(ch - ph), wall);
         }
         if pc >= MIN_MEAN_VECTOR {
             groups.push((pc, PG_WHITES));
         }
-        // The whites' direction: the mean per-pixel distance to the reference-given tint.
+        // The whites' direction: the mean per-pixel distance to the licensed tint.
         let d = c.hl4_d;
         if d > o.white_tol {
             t.guard_white_direction =
@@ -1093,27 +1254,21 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
                 PURPLE_APPROACH_WEIGHT * sq((PURPLE_REACH_DEG - dist(ch)) / DRIFT_SCALE_DEG) * ok;
         }
     }
-    // Skin: the absolute wall and the drift wall, on the mean vector, and the chroma wall (the three of Skin protection).
+    // Skin (RG-13, P1): two walls on the move of the skin's mean colour from the photo's own, the two quantities H2 measures, with limits
+    // inside H2's lines, from H2's coverage (skin at 1 % of the frame, analysis picture). There is no absolute band: skin under coloured
+    // light stays as shot.
     let (pe, me) = (&f.p.el[5], &m.el[5]);
-    if pe.share >= PRESENT_SHARE && me.n > 0 {
-        let ((_, pc), (h, chroma)) = (pe.mv(), me.mv());
-        let eh = (SKIN_HUE.0 - h).max(h - SKIN_HUE.1).max(0.0);
-        let ec = (SKIN_CHROMA.0 - chroma)
-            .max(chroma - SKIN_CHROMA.1)
-            .max(0.0);
-        if f.skin_protection {
-            t.guard_skin =
-                SKIN_WEIGHT * (sq(eh / SKIN_ABSOLUTE_SCALE) + sq(ec / SKIN_ABSOLUTE_SCALE));
-        }
-        if pc >= MIN_MEAN_VECTOR && f.skin_protection {
+    if f.skin_protection && f.coverage.skin >= HARM_COVERAGE && pe.n > 0 && me.n > 0 {
+        let (_, pc) = pe.mv();
+        if pc >= H2_HUE_MIN_CHROMA {
             let (ph, h) = hues(5);
-            let excess = (wrap_deg(h - ph).abs() - o.skin_drift).max(0.0);
+            let excess = (wrap_deg(h - ph).abs() - skin_hue_limit_deg(o)).max(0.0);
             t.guard_skin_drift = SKIN_WEIGHT * sq(excess / SKIN_DRIFT_SCALE);
         }
-        if pe.share >= SKIN_CHROMA_MIN_SHARE && f.skin_protection {
-            let excess = (t.skin_dlogc - o.skin_dlogc_max).max(0.0);
-            t.guard_skin_chroma = SKIN_WEIGHT * sq(excess / SKIN_CHROMA_SCALE);
-        }
+        let up = (t.skin_dlogc - skin_chroma_up_limit(o)).max(0.0);
+        let down = (-t.skin_dlogc - skin_chroma_down_limit()).max(0.0);
+        t.guard_skin_chroma =
+            SKIN_WEIGHT * (sq(up / SKIN_CHROMA_SCALE) + sq(down / SKIN_CHROMA_SCALE));
     }
     // The content turn budget.
     if c.turn_share > o.turn_share {
