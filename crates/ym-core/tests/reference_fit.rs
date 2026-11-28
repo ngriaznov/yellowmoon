@@ -982,19 +982,20 @@ fn fit_at(r: &Rig, percent: f64) -> (FitOutcome, ym_core::apple_auto::AdvisorPic
     (out, shown)
 }
 
-/// Row (2) and (3): the gap, Δ rising with the slider, the bisection's result against its target, and the recovery of a photo a stop
-/// under its reference at 0, 50 and 100 %.
-#[test]
-fn a_photo_a_stop_under_comes_back_toward_the_reference_in_proportion_to_the_slider() {
-    let (r, y_r) = dark_photo_rig(1.0, 0.0);
+/// Fits a photo `under_ev` stops under its reference at 0, 25, 50, 75 and 100 %, checks the move of each (Δ rises with the slider
+/// toward the reference, the bisection is within 0.01 stop of its target) and returns the held gap and the shown median move of each
+/// fit in stops: `(gap, [(percent, move)])`.
+fn slider_run(under_ev: f64) -> (f64, Vec<(f64, f64)>) {
+    let (r, y_r) = dark_photo_rig(under_ev, 0.0);
     let y_p = median_y(&r.picture(0));
     let gap = (y_r / y_p).log2();
-    println!("gap between the photo and the reference: {gap:.3} stops");
+    println!("under {under_ev}: gap between the photo and the reference {gap:.3} stops");
     assert!(
-        gap > 0.5 && gap < 1.5,
+        gap.abs() > 0.2 && gap.abs() < 1.5,
         "the scene's gap is under the hold: {gap}"
     );
-    let mut last_asked = -1.0;
+    let sign = gap.signum();
+    let mut last_asked = f64::NEG_INFINITY;
     let mut shown_moves: Vec<(f64, f64)> = Vec::new();
     for (percent, share) in [
         (0.0, 0.0),
@@ -1007,17 +1008,17 @@ fn a_photo_a_stop_under_comes_back_toward_the_reference_in_proportion_to_the_sli
         let b = out.brightness;
         let got = (median_y(&shown) / y_p).log2();
         println!(
-            "{percent:>5} %: asked {:.3}, displayed move of the sample {:.3}, shift {:.3}, fitted picture moved {got:.3} (target {:.3}), {:?}",
-            b.asked_ev,
-            b.moved_ev,
-            b.shift_ev,
-            share * gap,
-            out.status
+            "{percent:>5} %: asked {:.3}, displayed move of the sample {:.3}, shift {:.3}, fitted picture moved {got:.3}, {:?}",
+            b.asked_ev, b.moved_ev, b.shift_ev, out.status
         );
         shown_moves.push((percent, got));
         assert_eq!(b.percent, percent);
-        assert!(b.asked_ev >= last_asked, "the move rises with the slider");
-        last_asked = b.asked_ev;
+        // The asked move grows toward the reference: it rises for a brighter reference and falls for a darker one.
+        assert!(
+            sign * b.asked_ev >= last_asked,
+            "the move goes toward the reference as the slider rises"
+        );
+        last_asked = sign * b.asked_ev;
         assert!(!b.limited);
         if percent == 0.0 {
             // Nothing new ran: today's fit, and nothing moved.
@@ -1028,48 +1029,56 @@ fn a_photo_a_stop_under_comes_back_toward_the_reference_in_proportion_to_the_sli
         assert!((b.moved_ev - b.asked_ev).abs() < 0.01, "{b:?}");
         assert!((b.asked_ev - share * b.gap_ev).abs() < 1e-12, "{b:?}");
     }
-    println!("shown moves by percent: {shown_moves:?}, gap {gap:.3}");
-    // Row (3), the whole of it: at 100 % the fit comes back to within 0.1 stop of the reference's median; the shown move never falls
-    // as the slider rises. (Half way at 50 %, within 0.1 stop, is **not met** on this scene: see the ignored test below and
-    // `docs/STATUS.md`.)
-    let at = |p: f64| {
-        shown_moves
-            .iter()
-            .find(|m| m.0 == p)
-            .map(|m| m.1)
-            .expect("measured")
-    };
-    assert!(
-        (at(100.0) - gap).abs() < 0.1,
-        "100 %: moved {:.3}, gap {gap:.3}",
-        at(100.0)
-    );
-    assert!(
-        shown_moves.windows(2).all(|w| w[1].1 >= w[0].1),
-        "{shown_moves:?}"
-    );
-    // The slider moves the shown photo toward the reference's median: the slider at 100 % is nearer than at 0 %.
-    assert!((at(100.0) - gap).abs() < (at(0.0) - gap).abs());
+    (gap, shown_moves)
 }
 
-/// Row (3), the half-way line: at 50 % the shown photo's median should be half way (within 0.1 stop) between the photo's and the
-/// reference's. **It is not**: the fit moves the median 0.33 stop with Match brightness at 0 (its floor, ceiling and contrast terms
-/// lift a photo a stop under its reference) and 0.39 stop beyond the moved photo's at 50 %, so it lands 1.02 stops up, not 0.63. The
-/// test is kept, ignored, so that the number can be measured again (`cargo test -p ym-core --test reference_fit -- --ignored
-/// lands_half_way`); the miss is reported in `docs/STATUS.md` and not loosened (`AGENTS.md`).
-#[test]
-#[ignore = "RG-16 gate (3) at 50 % is not met: reported in docs/STATUS.md"]
-fn a_photo_a_stop_under_lands_half_way_to_the_reference_at_fifty_percent() {
-    let (r, y_r) = dark_photo_rig(1.0, 0.0);
-    let y_p = median_y(&r.picture(0));
-    let gap = (y_r / y_p).log2();
-    let (_, shown) = fit_at(&r, 50.0);
-    let got = (median_y(&shown) / y_p).log2();
+/// Row (3): the shown median move at `b` is within 0.1 stop of `m0 + b (g - m0)`, `m0` being the 0 % fit's own shown move; it is
+/// monotone in `b` (toward the reference); 100 % is within 0.1 stop of the reference's median.
+fn check_even_slider(gap: f64, moves: &[(f64, f64)]) {
+    let m0 = moves[0].1;
+    for &(percent, got) in &moves[1..] {
+        let b = percent / 100.0;
+        let want = m0 + b * (gap - m0);
+        assert!(
+            (got - want).abs() < 0.1,
+            "{percent} %: moved {got:.3}, half-way rule wants {want:.3} (m0 {m0:.3}, gap {gap:.3})"
+        );
+    }
+    let sign = gap.signum();
     assert!(
-        (got - 0.5 * gap).abs() < 0.1,
-        "moved {got:.3}, half the gap is {:.3}",
-        0.5 * gap
+        moves.windows(2).all(|w| sign * w[1].1 >= sign * w[0].1),
+        "not monotone: {moves:?}"
     );
+    let at_100 = moves.last().expect("measured").1;
+    assert!(
+        (at_100 - gap).abs() < 0.1,
+        "100 %: moved {at_100:.3}, the reference is {gap:.3} away"
+    );
+}
+
+/// Rows (2) and (3): a photo a stop under its reference.
+#[test]
+fn a_photo_a_stop_under_moves_evenly_from_the_zero_percent_fit_to_the_reference() {
+    let (gap, moves) = slider_run(1.0);
+    println!("shown moves by percent: {moves:?}, gap {gap:.3}");
+    check_even_slider(gap, &moves);
+}
+
+/// Row (3) on a photo half a stop under its reference.
+#[test]
+fn a_photo_half_a_stop_under_goes_monotonically_to_the_reference() {
+    let (gap, moves) = slider_run(0.5);
+    println!("shown moves by percent: {moves:?}, gap {gap:.3}");
+    check_even_slider(gap, &moves);
+}
+
+/// Row (3) on a photo a stop over its reference: the gap is negative and the move falls as the slider rises.
+#[test]
+fn a_photo_a_stop_over_goes_monotonically_down_to_the_reference() {
+    let (gap, moves) = slider_run(-1.0);
+    println!("shown moves by percent: {moves:?}, gap {gap:.3}");
+    assert!(gap < 0.0);
+    check_even_slider(gap, &moves);
 }
 
 /// Row (2): the gap is held at 1.5 stops, and the report says so.

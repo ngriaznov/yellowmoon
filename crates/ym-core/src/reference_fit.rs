@@ -627,6 +627,7 @@ pub fn fit_node(
             &r_scene,
             base.skin_protection,
             photo.coverage,
+            brightness.percent / 100.0,
         ),
         None => Fixed::with_coverage(
             net,

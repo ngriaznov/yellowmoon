@@ -400,6 +400,10 @@ pub struct Fixed {
     /// clip term. They are `p.hi` and `p.lo25` unless the walls read a moved photo (Match brightness, `docs/34` section 5.8), when the
     /// clip term keeps the photo's own.
     pub clip_base: [f64; 2],
+    /// The anchor's dead band, in L\*: how far the candidate's median may sit from the target median before the anchor term counts.
+    /// It is `ANCHOR.1` (5) unless Match brightness narrows it to `5 * (1 - b)` (`docs/34` section 5.8), so that the free drift the
+    /// floor and ceiling pull the median into shrinks as the slider rises and the slider moves the result evenly.
+    pub anchor_band_lstar: f64,
     sector: Vec<u8>,
     p_hue: Vec<f64>,
     p_sec_logc: [f64; SECTORS],
@@ -454,7 +458,8 @@ impl Fixed {
     /// [`Fixed::with_coverage`] for a fit that moves the photo's brightness (`docs/34` section 5.8): `moved_px` is the photo `P'`
     /// with its exposure shifted, and the network and the walls read it as they would read the photo (so the key-mismatch gate, the
     /// targets written around the photo and the walls that compare a candidate with the photo all see `P'`); **the clip term keeps
-    /// the photo `P`** (`p_px`) as its baseline, so the move may not clip more than the photo and the reference license.
+    /// the photo `P`** (`p_px`) as its baseline, so the move may not clip more than the photo and the reference license. `share` is Match brightness `b`, 0 to 1: the
+    /// anchor's dead band becomes `ANCHOR.1 * (1 - b)` L\* ([`Fixed::anchor_band_lstar`]).
     ///
     /// # Errors
     ///
@@ -473,6 +478,7 @@ impl Fixed {
         r_scene: &PixelScene,
         skin_protection: bool,
         coverage: Coverage,
+        share: f64,
     ) -> Result<Self, NetworkError> {
         assert_eq!(p_px.len(), moved_px.len(), "the photo and the moved photo");
         let mut f = Self::with_coverage(
@@ -485,6 +491,7 @@ impl Fixed {
             coverage,
         )?;
         f.clip_base = clip_shares(p_px);
+        f.anchor_band_lstar = ANCHOR.1 * (1.0 - share.clamp(0.0, 1.0));
         Ok(f)
     }
 
@@ -685,6 +692,7 @@ impl Fixed {
             coverage,
             licence,
             clip_base,
+            anchor_band_lstar: ANCHOR.1,
             sector,
             p_hue,
             p_sec_logc,
@@ -1124,7 +1132,7 @@ pub fn terms(c: &CandidateMeasure, f: &Fixed) -> Terms {
     t.floor = FLOOR.2 * term(m.p2 - o.p2, FLOOR.0, FLOOR.1);
     t.ceiling = CEILING.2 * term(m.p98 - o.p98, CEILING.0, CEILING.1);
     t.contrast = CONTRAST.2 * term(m.iqr_rel - o.iqr_rel, CONTRAST.0, CONTRAST.1);
-    t.anchor = ANCHOR.2 * term(m.p50 - o.p50, ANCHOR.0, ANCHOR.1);
+    t.anchor = ANCHOR.2 * term(m.p50 - o.p50, ANCHOR.0, f.anchor_band_lstar);
     for b in 0..3 {
         for ch in 0..2 {
             t.tint += TINT_BAND_WEIGHT[b] * term(m.tint[b][ch] - o.tint[b][ch], TINT.0, TINT.1);

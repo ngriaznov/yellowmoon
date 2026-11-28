@@ -1633,10 +1633,12 @@ fn moving_the_photo_costs_the_walls_nothing_and_a_moved_photo_that_is_the_photo_
         &pr.r_scene,
         true,
         coverage,
+        0.0,
     )
     .unwrap();
     assert_eq!(format!("{today:?}"), format!("{same:?}"));
     assert_eq!(today.clip_base, [today.p.hi, today.p.lo25]);
+    assert_eq!(today.anchor_band_lstar, 5.0);
     // P' = a pure exposure move (every pixel lifted, nothing clipped). The walls read P', so the moved photo itself costs them nothing.
     let moved = lifted(&pr.p_px, 6.0);
     let f = Fixed::with_moved_photo(
@@ -1648,8 +1650,13 @@ fn moving_the_photo_costs_the_walls_nothing_and_a_moved_photo_that_is_the_photo_
         &pr.r_scene,
         true,
         coverage,
+        0.5,
     )
     .unwrap();
+    assert_eq!(
+        f.anchor_band_lstar, 2.5,
+        "the anchor's dead band is 5 (1 - b)"
+    );
     assert!(
         (f.p.p50 - today.p.p50 - 6.0).abs() < 1.0,
         "the network reads P''s median"
@@ -1692,6 +1699,7 @@ fn the_clip_term_keeps_the_photo_as_its_baseline() {
         &pr.r_scene,
         true,
         coverage,
+        0.5,
     )
     .unwrap();
     assert_eq!(f.clip_base, [0.0, 0.0]);
