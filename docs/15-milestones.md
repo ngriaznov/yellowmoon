@@ -561,7 +561,7 @@ Tasks (details below; the *Done when* of each is the gate of `docs/34` §10 that
 
 **RG-18 · Match brightness: the dev evaluation** (RG-16). `refgrade-eval` learns the slider and measures harms against `P'`; the dev set at 0, 50 and 100 %; the owner's 7 photos at 100 % reported separately. *Done when:* §10's row (6) passes on dev, or the failure is reported; the numbers are in `docs/STATUS.md`.
 
-**[HUMAN] RG-H5 · Approve the Match brightness plan** (`docs/34` §5.8, decisions 70 to 75): the default 0, the hold at 1.5 stops, applying at the next fit, the key mismatch not holding the level back, the dev gate.
+**[HUMAN] RG-H5 · Approve the Match brightness plan** (`docs/34` §5.8, decisions 70 to 75): the default 0, the hold at 1.5 stops, applying at the next fit, the key mismatch not holding the level back, the dev gate. **Done 2026-11-28: "defaults for brightness are confirmed".**
 
 **[HUMAN] RG-H1 · Answer the questions of `docs/34` §14.** **Done 2026-11-25:** the owner chose to grade per element with a scene segmenter, accepted that a fit takes several seconds (with progress and Cancel), asked for a quality round on skin and tinted whites before release, and accepted every recommended default of the 18 questions.
 
