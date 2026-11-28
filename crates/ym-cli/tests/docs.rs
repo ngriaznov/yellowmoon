@@ -63,6 +63,7 @@ const OTHER_FLAGS: &[&str] = &[
     "--settings",
     "--reference",
     "--reference-strength",
+    "--reference-brightness",
     "--no-skin-protection",
     "--reference-node",
     "--preset",

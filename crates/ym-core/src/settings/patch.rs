@@ -823,6 +823,9 @@ pub struct NodePatch {
     /// Skin protection on or off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_protection: Option<bool>,
+    /// New Match brightness, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_brightness: Option<f64>,
 
     // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
     /// New blend mode.
@@ -919,6 +922,7 @@ impl NodePatch {
             opacity => "opacity", blur_type => "type", soft => "soft", motion => "motion",
             zoom => "zoom", respect_mask_edges => "respect_mask_edges",
             hue_curves => "hue_curves", elements => "elements", skin_protection => "skin_protection",
+            match_brightness => "match_brightness",
         );
         v
     }
@@ -968,6 +972,7 @@ impl NodePatch {
             SettingsField::HueCurves => self.hue_curves.is_some(),
             SettingsField::Elements => self.elements.is_some(),
             SettingsField::SkinProtection => self.skin_protection.is_some(),
+            SettingsField::MatchBrightness => self.match_brightness.is_some(),
             grade_field => self
                 .grade
                 .as_ref()
@@ -1114,6 +1119,7 @@ impl NodePatch {
             zoom,
             respect_mask_edges,
             skin_protection,
+            match_brightness,
         );
         if let Some(h) = other.hue_curves {
             match &mut self.hue_curves {
@@ -1437,6 +1443,7 @@ impl NodePatch {
             SettingsField::Elements => p.elements = Some(ElementsPatch::whole(&n.elements)),
             SettingsField::Strength => p.strength = Some(n.strength),
             SettingsField::SkinProtection => p.skin_protection = Some(n.skin_protection),
+            SettingsField::MatchBrightness => p.match_brightness = Some(n.match_brightness),
             _ => return Self::of_graded_field(&n.trim, &n.grade, field),
         }
         Some(p)
@@ -1962,6 +1969,9 @@ impl NodePatch {
         if let Some(v) = self.skin_protection {
             next.skin_protection = v;
         }
+        if let Some(v) = self.match_brightness {
+            next.match_brightness = v;
+        }
         if let Some(m) = &self.masks {
             m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
         }
@@ -2229,6 +2239,9 @@ impl DevelopSettings {
                     SettingsField::Elements => a.elements == b.elements,
                     SettingsField::Strength => a.strength.to_bits() == b.strength.to_bits(),
                     SettingsField::SkinProtection => a.skin_protection == b.skin_protection,
+                    SettingsField::MatchBrightness => {
+                        a.match_brightness.to_bits() == b.match_brightness.to_bits()
+                    }
                     _ => graded_same(&a.trim, &a.grade, &b.trim, &b.grade, field),
                 }
             }

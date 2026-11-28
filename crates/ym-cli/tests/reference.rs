@@ -75,6 +75,7 @@ fn the_flags_need_a_reference() {
     let arw = sb.arw("a.ARW");
     for flag in [
         vec!["--reference-strength", "50"],
+        vec!["--reference-brightness", "50"],
         vec!["--no-skin-protection"],
         vec!["--reference-node", "2"],
     ] {
@@ -94,6 +95,14 @@ fn the_flags_need_a_reference() {
         &["--reference", arg(&still), "--reference-strength", "101"],
     );
     assert_eq!(out.status.code(), Some(2));
+    for bad in ["101", "-1", "lots"] {
+        let out = render(
+            &sb,
+            &arw,
+            &["--reference", arg(&still), "--reference-brightness", bad],
+        );
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+    }
 }
 
 #[test]
@@ -283,6 +292,8 @@ fn a_fit_adds_a_node_after_main_keeps_the_nodes_fields_and_reports_what_it_found
             arg(&still),
             "--reference-strength",
             "60",
+            "--reference-brightness",
+            "40",
             "--no-skin-protection",
         ],
     );
@@ -300,6 +311,10 @@ fn a_fit_adds_a_node_after_main_keeps_the_nodes_fields_and_reports_what_it_found
     assert!(report["text"].as_str().is_some_and(|t| t.len() > 10));
     assert_eq!(report["strength"].as_f64(), Some(60.0));
     assert_eq!(report["skin_protection"], false);
+    // Match brightness: the flag sets the node's field, and the report says what the move was.
+    assert_eq!(report["brightness"]["percent"].as_f64(), Some(40.0));
+    assert!(report["brightness"]["moved_ev"].as_f64().is_some());
+    assert!(report["brightness"]["limited"].is_boolean());
     assert!(report["start"] == "neutral" || report["start"] == "look");
     assert!(report["time_ms"].as_u64().is_some());
     assert!(report["candidates"].as_u64().is_some_and(|n| n > 0));
@@ -324,6 +339,7 @@ fn a_fit_adds_a_node_after_main_keeps_the_nodes_fields_and_reports_what_it_found
     assert_eq!(node["kind"], "reference_grade");
     assert_eq!(node["strength"].as_f64(), Some(60.0));
     assert_eq!(node["skin_protection"], false);
+    assert_eq!(node["match_brightness"].as_f64(), Some(40.0));
     let links = r["settings"]["nodes"]["links"].as_array().expect("links");
     assert!(
         links
@@ -366,6 +382,12 @@ fn a_fit_adds_a_node_after_main_keeps_the_nodes_fields_and_reports_what_it_found
     assert_eq!(node["strength"].as_f64(), Some(50.0));
     assert_eq!(node["trim"]["exposure_ev"].as_f64(), Some(0.25));
     assert_eq!(r["reference"]["node"], 2);
+    // No flag: Match brightness stays at its 0 and nothing moved.
+    assert_eq!(node["match_brightness"].as_f64(), Some(0.0));
+    assert_eq!(
+        r["reference"]["brightness"],
+        json!({ "percent": 0, "moved_ev": 0, "limited": false })
+    );
     let pinned = sb.root().join("pinned.json");
     std::fs::write(&pinned, r["settings"].to_string()).expect("write");
     let again = sb

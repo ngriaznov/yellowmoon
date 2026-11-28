@@ -30,8 +30,8 @@ use super::masks::MaskSettings;
 use super::mixers::{MIXER_INPUTS, MixerNode, OPACITY_RANGE};
 use super::reference::{
     DEFAULT_REFERENCE_NAME, ELEMENT_CHROMA_RANGE, ELEMENT_EXPOSURE_RANGE_EV, ELEMENT_HUE_CAPS_DEG,
-    ELEMENT_NAMES, ElementValues, HUE_VS_HUE_RANGE_DEG, HUE_VS_SAT_RANGE, HuePoint, MAX_HUE_POINTS,
-    ReferenceGradeNode, check_shape,
+    ELEMENT_NAMES, ElementValues, HUE_VS_HUE_RANGE_DEG, HUE_VS_SAT_RANGE, HuePoint,
+    MATCH_BRIGHTNESS_RANGE, MAX_HUE_POINTS, ReferenceGradeNode, check_shape,
 };
 use super::uniform::{
     ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, UNIFORM_AMOUNT_RANGE,
@@ -1670,6 +1670,7 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
             "elements",
             "strength",
             "skin_protection",
+            "match_brightness",
             "masks",
         ],
         NodeKind::Parallel => &["name", "bypass"],
@@ -2534,6 +2535,13 @@ impl ReferenceGradeNode {
         let (v, c) = clamp_to(&format!("{prefix}.strength"), self.strength, STRENGTH_RANGE)?;
         self.strength = v;
         s.note(node, SettingsField::Strength, c);
+        let (v, c) = clamp_to(
+            &format!("{prefix}.match_brightness"),
+            self.match_brightness,
+            MATCH_BRIGHTNESS_RANGE,
+        )?;
+        self.match_brightness = v;
+        s.note(node, SettingsField::MatchBrightness, c);
         let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
         s.note(node, SettingsField::Masks, changed);
         Ok(())

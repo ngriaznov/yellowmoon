@@ -126,8 +126,8 @@ pub use patch::{
 pub use reference::{
     DEFAULT_REFERENCE_NAME, ELEMENT_CHROMA_RANGE, ELEMENT_EXPOSURE_RANGE_EV, ELEMENT_HUE_CAPS_DEG,
     ELEMENT_NAMES, EffectiveReference, ElementValues, Elements, HUE_VS_HUE_RANGE_DEG,
-    HUE_VS_SAT_RANGE, HueCurves, HuePoint, MAX_HUE_POINTS, ReferenceGradeNode, SubjectValues,
-    hue_pairs,
+    HUE_VS_SAT_RANGE, HueCurves, HuePoint, MATCH_BRIGHTNESS_RANGE, MAX_HUE_POINTS,
+    ReferenceGradeNode, SubjectValues, hue_pairs,
 };
 pub use uniform::{
     ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, TargetValue,
@@ -424,6 +424,8 @@ pub enum SettingsField {
     Elements,
     /// A Reference Grade node's `skin_protection`.
     SkinProtection,
+    /// A Reference Grade node's `match_brightness`.
+    MatchBrightness,
     /// A Layer's blend `mode`.
     Mode,
     /// A Layer's `opacity`.
@@ -433,7 +435,7 @@ pub enum SettingsField {
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 51] = [
+    pub const ALL: [SettingsField; 52] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -483,6 +485,7 @@ impl SettingsField {
         SettingsField::HueCurves,
         SettingsField::Elements,
         SettingsField::SkinProtection,
+        SettingsField::MatchBrightness,
         SettingsField::Mode,
         SettingsField::Opacity,
     ];
@@ -540,6 +543,7 @@ impl SettingsField {
             Self::HueCurves => "hue_curves",
             Self::Elements => "elements",
             Self::SkinProtection => "skin_protection",
+            Self::MatchBrightness => "match_brightness",
             Self::Mode => "mode",
             Self::Opacity => "opacity",
         }
@@ -666,6 +670,7 @@ impl SettingsField {
                             | Self::Elements
                             | Self::Strength
                             | Self::SkinProtection
+                            | Self::MatchBrightness
                     )
             }
             NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
@@ -717,6 +722,7 @@ impl SettingsField {
             | Self::HueCurves
             | Self::Elements
             | Self::SkinProtection
+            | Self::MatchBrightness
             | Self::Mode
             | Self::Opacity
             | Self::Contrast
@@ -2614,6 +2620,7 @@ mod tests {
             F::HueCurves,
             F::Elements,
             F::SkinProtection,
+            F::MatchBrightness,
             F::BlurType,
             F::Soft,
             F::BlurLens,
@@ -2642,6 +2649,6 @@ mod tests {
             assert_eq!(back, f);
         }
         assert_eq!(F::BlurLens.name(), F::Lens.name());
-        assert_eq!(SettingsField::ALL.len(), 51);
+        assert_eq!(SettingsField::ALL.len(), 52);
     }
 }

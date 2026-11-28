@@ -552,10 +552,10 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
     const { type, soft, lens, motion, zoom, respect_mask_edges } = newBlur(0, [0, 0]);
     patch = { type, soft, lens, motion, zoom, respect_mask_edges };
   } else if (node.kind === "reference_grade") {
-    // The node's own fields (trim, grade, hue curves, element grades) go back to their defaults, Strength to 100 and Skin protection on; the masks, the name,
+    // The node's own fields (trim, grade, hue curves, element grades) go back to their defaults, Strength to 100, Skin protection on and Match brightness 0; the masks, the name,
     // the bypass and the links stay (`docs/34` section 3.5). The reference the core holds for the session stays too: it is not a setting.
-    const { trim, grade, hue_curves, elements, strength, skin_protection } = newReferenceGrade(0, [0, 0]);
-    patch = { trim, grade, hue_curves, elements, strength, skin_protection };
+    const { trim, grade, hue_curves, elements, strength, skin_protection, match_brightness } = newReferenceGrade(0, [0, 0]);
+    patch = { trim, grade, hue_curves, elements, strength, skin_protection, match_brightness };
   } else if (node.kind === "layer") {
     // A Layer's Mode and Opacity; its inputs, name and bypass stay.
     patch = { mode: "normal", opacity: 1 };

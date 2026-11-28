@@ -693,10 +693,10 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
       // A Reference Grade node is a corrector's trim and grade and four fields of its own (`docs/34` §3.1), which are plain numbers too: the hue curves,
-      // the element grades, Strength and Skin protection fold in at once, as the core will.
+      // the element grades, Strength, Skin protection and Match brightness fold in at once, as the core will.
       if (nodeOf(settings, id)?.kind === "reference_grade") {
-        const { hue_curves, elements, strength, skin_protection } = node;
-        const own = { ...(hue_curves ? { hue_curves } : {}), ...(elements ? { elements } : {}), ...(strength !== undefined ? { strength } : {}), ...(skin_protection !== undefined ? { skin_protection } : {}) };
+        const { hue_curves, elements, strength, skin_protection, match_brightness } = node;
+        const own = { ...(hue_curves ? { hue_curves } : {}), ...(elements ? { elements } : {}), ...(strength !== undefined ? { strength } : {}), ...(skin_protection !== undefined ? { skin_protection } : {}), ...(match_brightness !== undefined ? { match_brightness } : {}) };
         if (Object.keys(own).length > 0) settings = applyPatch(settings, { nodes: { [key]: own } });
       }
     } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement" || nodeOf(settings, id)?.kind === "blur")) {

@@ -23,6 +23,8 @@ pub const HUE_VS_HUE_RANGE_DEG: (f64, f64) = (-180.0, 180.0);
 pub const HUE_VS_SAT_RANGE: (f64, f64) = (0.0, 8.0);
 /// Range of an element's exposure offset, in stops.
 pub const ELEMENT_EXPOSURE_RANGE_EV: (f64, f64) = (-1.0, 1.0);
+/// Range of Match brightness, in percent (`docs/34` section 5.8).
+pub const MATCH_BRIGHTNESS_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of an element's chroma ratio.
 pub const ELEMENT_CHROMA_RANGE: (f64, f64) = (0.5, 1.6);
 /// The members of `elements`, in the order of `docs/34` section 2.3: the six elements, then the subject.
@@ -184,12 +186,15 @@ pub struct ReferenceGradeNode {
     pub strength: f64,
     /// Whether the next fit uses the walls that keep skin from drifting; it changes no pixel by itself.
     pub skin_protection: bool,
+    /// 0 to 100, in percent: how far the next fit moves the photo's brightness toward the reference's (`docs/34` section 5.8);
+    /// it changes no pixel by itself. A document without it reads 0.
+    pub match_brightness: f64,
     /// The masks, as a corrector's: they limit where the whole node acts.
     pub masks: MaskSettings,
 }
 
 impl Default for ReferenceGradeNode {
-    /// Every field at the identity, Strength 100, Skin protection on.
+    /// Every field at the identity, Strength 100, Skin protection on, Match brightness 0.
     fn default() -> Self {
         Self {
             name: DEFAULT_REFERENCE_NAME.to_owned(),
@@ -201,6 +206,7 @@ impl Default for ReferenceGradeNode {
             elements: Elements::default(),
             strength: 100.0,
             skin_protection: true,
+            match_brightness: 0.0,
             masks: MaskSettings::default(),
         }
     }

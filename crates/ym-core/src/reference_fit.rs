@@ -23,7 +23,10 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use rayon::prelude::*;
 use ym_color::display::ColorChain;
 use ym_color::mask::NodeMasks;
-use ym_color::refgrade::measure::{LabConv, PixelScene, Px};
+use ym_color::refgrade::brightness::{
+    BrightnessMove, Gap, asked_ev, luminance_of_lstar, solve_shift,
+};
+use ym_color::refgrade::measure::{LabConv, PixelScene, Px, median_lightness};
 use ym_color::refgrade::network::Network;
 use ym_color::refgrade::objective::Fixed;
 use ym_color::refgrade::params::{ElementNumbers, Numbers, Params, to_numbers};
@@ -142,7 +145,28 @@ impl CandidateRenderer for ChainCandidates<'_> {
     }
 
     fn render(&mut self, x: &Params, out: &mut [Px]) -> Result<(), Refused> {
-        let node = self.node_for(x);
+        self.render_shifted(x, 0.0, out)
+    }
+}
+
+impl ChainCandidates<'_> {
+    /// [`CandidateRenderer::render`] with the photo's exposure shifted by `shift_ev` stops **before the node**, as the node's own
+    /// Exposure (its trim) would shift it: Match brightness's moved photo `P'` is this render at the identity numbers
+    /// (`docs/34` section 5.8). A shift of 0 is `render`, bit for bit.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`] when the chain cannot take the node.
+    pub fn render_shifted(
+        &mut self,
+        x: &Params,
+        shift_ev: f64,
+        out: &mut [Px],
+    ) -> Result<(), Refused> {
+        let mut node = self.node_for(x);
+        if shift_ev != 0.0 {
+            node.trim.exposure_ev += shift_ev;
+        }
         let params = reference_node_params(&node, NodeMasks::default()).map_err(|_| Refused)?;
         self.chain
             .replace_node(self.photo.node, &params)
@@ -164,6 +188,54 @@ impl CandidateRenderer for ChainCandidates<'_> {
             });
         Ok(())
     }
+}
+
+/// Match brightness's moved photo `P'` (`docs/34` section 5.8): the gap between the reference's and the photo's median, the move
+/// `b * g` it asks for, the exposure shift that makes the photo's displayed median luminance move by it (a deterministic bisection
+/// over the sample, [`ym_color::refgrade::brightness::solve_shift`]) and the sample rendered with that shift at the node's identity.
+/// The `BrightnessMove` says what was done; the pixels are `None` when the move is 0 (the photo as it is is `P'`).
+fn move_photo(
+    candidates: &mut ChainCandidates<'_>,
+    p_px: &[Px],
+    r_px: &[Px],
+    percent: f64,
+    cancel: &CancelToken,
+) -> Result<(BrightnessMove, Option<Vec<Px>>), FitFailure> {
+    let refused =
+        |_: Refused| FitFailure::Failed("The photo could not be rendered for the fit.".to_owned());
+    let gap = Gap::of_pictures(p_px, r_px);
+    let asked_ev = asked_ev(percent, &gap);
+    let mut made = BrightnessMove {
+        percent,
+        gap_ev: gap.held_ev,
+        asked_ev,
+        shift_ev: 0.0,
+        moved_ev: 0.0,
+        limited: gap.limited,
+    };
+    if asked_ev == 0.0 {
+        return Ok((made, None));
+    }
+    let identity = [0.0; ym_color::refgrade::N_PARAMS];
+    let y_photo = luminance_of_lstar(median_lightness(p_px));
+    let target = y_photo * asked_ev.exp2();
+    let mut scratch = vec![Px::default(); p_px.len()];
+    let shift = solve_shift(target, |d| {
+        if cancel.is_cancelled() {
+            return Err(FitFailure::Cancelled);
+        }
+        candidates
+            .render_shifted(&identity, d, &mut scratch)
+            .map_err(refused)?;
+        Ok(luminance_of_lstar(median_lightness(&scratch)))
+    })?;
+    let mut moved = vec![Px::default(); p_px.len()];
+    candidates
+        .render_shifted(&identity, shift, &mut moved)
+        .map_err(refused)?;
+    made.shift_ev = shift;
+    made.moved_ev = (luminance_of_lstar(median_lightness(&moved)) / y_photo).log2();
+    Ok((made, Some(moved)))
 }
 
 /// The reference's pixels and scene at its analysis picture, measured: every pixel (`docs/34` section 5.1).
@@ -424,6 +496,9 @@ pub struct FitOutcome {
     pub found: Vec<ElementFound>,
     /// Whether skin was found in the photo (its share is at least 2 %): when not, Skin protection did nothing.
     pub skin_found: bool,
+    /// What Match brightness did (`docs/34` section 5.8): the percent, the stops the photo's median moved and whether the gap was
+    /// held at 1.5 stops. At 0 percent it is [`BrightnessMove::none`].
+    pub brightness: BrightnessMove,
 }
 
 /// Why a fit wrote nothing. The `Display` text is the sentence of `docs/34` section 9.3.
@@ -513,7 +588,7 @@ pub fn fit_node(
     held: &HeldReference,
     cancel: &CancelToken,
     progress: &mut (dyn FnMut(FitEvent) + Send),
-) -> Result<(FitResult, Vec<String>, Vec<ElementFound>), FitFailure> {
+) -> Result<(FitResult, Vec<String>, Vec<ElementFound>, BrightnessMove), FitFailure> {
     let Some(base) = src.settings.nodes.reference_grade(node) else {
         return Err(FitFailure::NotReferenceGrade(node));
     };
@@ -535,15 +610,34 @@ pub fn fit_node(
         .map_err(|_| {
             FitFailure::Failed("The photo could not be rendered for the fit.".to_owned())
         })?;
-    let fixed = Fixed::with_coverage(
-        net,
-        &p_px,
-        &photo.scene,
-        &r_px,
-        &r_scene,
-        base.skin_protection,
-        photo.coverage,
-    )
+    // Match brightness above 0 moves the photo first (`docs/34` section 5.8): the network and the walls read the moved photo `P'`, the
+    // clip term keeps `P`. At 0 nothing of this runs and the fit is today's, bit for bit.
+    let (brightness, moved_px) = if base.match_brightness > 0.0 {
+        move_photo(&mut candidates, &p_px, &r_px, base.match_brightness, cancel)?
+    } else {
+        (BrightnessMove::none(), None)
+    };
+    let fixed = match &moved_px {
+        Some(moved) => Fixed::with_moved_photo(
+            net,
+            &p_px,
+            moved,
+            &photo.scene,
+            &r_px,
+            &r_scene,
+            base.skin_protection,
+            photo.coverage,
+        ),
+        None => Fixed::with_coverage(
+            net,
+            &p_px,
+            &photo.scene,
+            &r_px,
+            &r_scene,
+            base.skin_protection,
+            photo.coverage,
+        ),
+    }
     .map_err(|e| FitFailure::Failed(e.to_string()))?;
     let setup = FitSetup {
         fixed: &fixed,
@@ -595,7 +689,7 @@ pub fn fit_node(
             });
         },
     )?;
-    Ok((result, notes, found))
+    Ok((result, notes, found, brightness))
 }
 
 /// The settings with the node's fitted fields set to a fit's numbers.
@@ -801,7 +895,7 @@ impl Core {
             .get(photo, node)
             .ok_or(FitFailure::NoReference)?;
         let src = PhotoSource::from_session(&self.session, photo)?;
-        let (result, mut notes, found) =
+        let (result, mut notes, found, brightness) =
             fit_node(&self.renderer, &src, node, &held, cancel, progress)?;
         if cancel.is_cancelled() {
             return Err(FitFailure::Cancelled);
@@ -831,6 +925,7 @@ impl Core {
             result: Box::new(result),
             found,
             skin_found,
+            brightness,
         })
     }
 }

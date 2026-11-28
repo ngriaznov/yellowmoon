@@ -2208,15 +2208,16 @@ fn write_reference_picture(path: &Path) {
 
 /// The photo's settings with a Reference Grade node (id 2) after Main, as the app's Add node makes it (`insertAfter` of
 /// `src/state/graphOps.ts`: the next id, one unit right of Main, put into the link that led to the Output; the Input, Main and the
-/// Output are left as they are), at `strength`.
-fn with_reference_node(base: &DevelopSettings, strength: f64) -> DevelopSettings {
+/// Output are left as they are), at `strength` and `brightness` (Match brightness).
+fn with_reference_node(base: &DevelopSettings, strength: f64, brightness: f64) -> DevelopSettings {
     let mut doc = serde_json::to_value(base).expect("settings");
     let nodes = doc["nodes"].as_object_mut().expect("nodes");
     nodes["items"]
         .as_array_mut()
         .expect("items")
         .push(serde_json::json!(
-        { "id": 2, "kind": "reference_grade", "pos": [1, 0], "strength": strength }));
+        { "id": 2, "kind": "reference_grade", "pos": [1, 0], "strength": strength,
+          "match_brightness": brightness }));
     nodes["links"] = serde_json::json!([
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
         { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
@@ -2277,6 +2278,12 @@ fn differences(a: &serde_json::Value, b: &serde_json::Value, at: &str, out: &mut
 /// same files** in JPEG, 16-bit TIFF, 16-bit PNG and DNG. The scene is the deterministic fake on both sides (`scene` `FakeScene`) or the
 /// real network (`Data`); the device is attached on both sides when `device` is set (the fit itself is the CPU's either way).
 fn reference_fit_leg(device: bool, scene: Depth) {
+    reference_fit_leg_at(device, scene, 0.0);
+}
+
+/// [`reference_fit_leg`] with Match brightness at `brightness` percent: the app's node has it in its settings and the binary gets
+/// `--reference-brightness` (RG-16, `docs/34` section 5.8); the two make the same fit, the same move and the same files.
+fn reference_fit_leg_at(device: bool, scene: Depth, brightness: f64) {
     let sb = Sandbox::new();
     let arw = sb.arw_sized("DSC00001.ARW", 256, 192, 11);
     let reference = sb.root().join("still.png");
@@ -2316,7 +2323,7 @@ fn reference_fit_leg(device: bool, scene: Depth) {
     app.core
         .update_settings(
             app.photo,
-            &SettingsPatch::between(&now, &with_reference_node(&now, 70.0)),
+            &SettingsPatch::between(&now, &with_reference_node(&now, 70.0, brightness)),
         )
         .expect("the node is added");
     app.core
@@ -2348,6 +2355,32 @@ fn reference_fit_leg(device: bool, scene: Depth) {
         Some(70.0),
         "the fit leaves Strength alone"
     );
+    assert_eq!(
+        fitted.nodes.reference_grade(2).map(|n| n.match_brightness),
+        Some(brightness),
+        "the fit leaves Match brightness alone"
+    );
+    // The flags the binary gets: the node's Strength and, above 0, its Match brightness.
+    let brightness_text = format!("{brightness}");
+    let mut fit_flags = vec![
+        "--reference",
+        reference.to_str().expect("utf-8"),
+        "--reference-strength",
+        "70",
+    ];
+    if brightness > 0.0 {
+        fit_flags.extend(["--reference-brightness", brightness_text.as_str()]);
+        assert!(
+            outcome.brightness.moved_ev != 0.0 && outcome.brightness.percent == brightness,
+            "the synthetic reference is brighter or darker than the photo: {:?}",
+            outcome.brightness
+        );
+    } else {
+        assert_eq!(
+            outcome.brightness,
+            ym_color::refgrade::brightness::BrightnessMove::none()
+        );
+    }
 
     let mut env_pairs: Vec<(&str, &str)> = Vec::new();
     if device {
@@ -2357,7 +2390,6 @@ fn reference_fit_leg(device: bool, scene: Depth) {
         env_pairs.push(common::FAKE_SCENE);
     }
     let env: &[(&str, &str)] = &env_pairs;
-    let reference_arg = reference.to_str().expect("utf-8");
     let mut tiff_of_the_fit: Option<Vec<PathBuf>> = None;
 
     // The binary's report carries the same fitted settings as the app holds, and the fit's own facts.
@@ -2373,7 +2405,7 @@ fn reference_fit_leg(device: bool, scene: Depth) {
                 "--auto-provider",
                 "yellowmoon",
             ])
-            .args(["--reference", reference_arg, "--reference-strength", "70"])
+            .args(&fit_flags)
             .arg(&arw)
             .arg("--out")
             .arg(sb.root().join("cli-json"))
@@ -2391,6 +2423,11 @@ fn reference_fit_leg(device: bool, scene: Depth) {
         );
         assert_eq!(v["reference"]["status"], "fitted");
         assert_eq!(v["reference"]["node"], 2);
+        // The binary reports the move the app's outcome has, number for number.
+        let b = &v["reference"]["brightness"];
+        assert_eq!(b["percent"].as_f64(), Some(brightness));
+        assert_eq!(b["moved_ev"].as_f64(), Some(outcome.brightness.moved_ev));
+        assert_eq!(b["limited"].as_bool(), Some(outcome.brightness.limited));
         assert_eq!(v["reference"]["elements"].as_array().map(Vec::len), Some(6));
     }
 
@@ -2417,7 +2454,7 @@ fn reference_fit_leg(device: bool, scene: Depth) {
     ] {
         let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
         let mut args = flags;
-        args.extend(["--reference", reference_arg, "--reference-strength", "70"]);
+        args.extend(fit_flags.iter().copied());
         let from_cli = cli_export_env(
             &sb,
             &[&arw],
@@ -2448,6 +2485,14 @@ fn reference_fit_leg(device: bool, scene: Depth) {
 #[test]
 fn a_reference_fit_is_the_same_settings_and_files_through_the_app_path_and_the_binary() {
     reference_fit_leg(false, Depth::FakeScene);
+}
+
+/// Match brightness at 60 % (RG-16, `docs/34` section 10, *Match brightness* row 5): the flag and the app's node give the same fitted
+/// numbers, the same move and the same bytes in JPEG, 16-bit TIFF, 16-bit PNG and DNG.
+#[test]
+fn a_reference_fit_with_match_brightness_is_the_same_settings_and_files_through_the_app_path_and_the_binary()
+ {
+    reference_fit_leg_at(false, Depth::FakeScene, 60.0);
 }
 
 /// The same with the device attached on both sides (the fit is the CPU's; the export runs the node on the device).

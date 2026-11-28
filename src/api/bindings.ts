@@ -3150,6 +3150,8 @@ export type NodePatch = {
 	elements?: ElementsPatch | null,
 	/**  A Reference Grade node's Skin protection, on or off. */
 	skin_protection?: boolean | null,
+	/**  A Reference Grade node's new Match brightness, percent. */
+	match_brightness?: number | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */
@@ -3853,6 +3855,8 @@ export type ReferenceGradeNode = {
 	strength: number,
 	/**  Whether the next fit keeps skin from drifting. */
 	skin_protection: boolean,
+	/**  0 to 100, in percent: how far the next fit moves the photo's brightness toward the reference's. */
+	match_brightness: number,
 	/**  The masks: they limit where the whole node acts. */
 	masks: MaskSettings,
 };

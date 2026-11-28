@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 use ym_core::session::PhotoId;
 use ym_core::settings::{
     DevelopSettings, ELEMENT_CHROMA_RANGE, ELEMENT_EXPOSURE_RANGE_EV, ELEMENT_HUE_CAPS_DEG,
-    ELEMENT_NAMES, FieldRef, GraphError, HUE_VS_HUE_RANGE_DEG, HUE_VS_SAT_RANGE, NodeId, NodeKind,
-    NodePatch, Port, ReferenceGradeNode, ResolvedSettings, SettingsError, SettingsField,
-    SettingsPatch, ports_in, ports_out,
+    ELEMENT_NAMES, FieldRef, GraphError, HUE_VS_HUE_RANGE_DEG, HUE_VS_SAT_RANGE,
+    MATCH_BRIGHTNESS_RANGE, NodeId, NodeKind, NodePatch, Port, ReferenceGradeNode,
+    ResolvedSettings, SettingsError, SettingsField, SettingsPatch, ports_in, ports_out,
 };
 use ym_looks::library::LookId;
 
@@ -112,6 +112,7 @@ fn a_new_node_has_the_defaults_of_the_spec_writes_every_field_and_changes_no_pix
     assert!(!n.bypass);
     assert_eq!(n.strength, 100.0);
     assert!(n.skin_protection);
+    assert_eq!(n.match_brightness, 0.0);
     assert!(n.hue_curves.is_default() && n.elements.is_default());
     assert!(n.masks.items.is_empty() && !n.masks.invert);
     assert!(n.is_inert());
@@ -141,6 +142,7 @@ fn a_new_node_has_the_defaults_of_the_spec_writes_every_field_and_changes_no_pix
             "id",
             "kind",
             "masks",
+            "match_brightness",
             "name",
             "pos",
             "skin_protection",
@@ -160,6 +162,7 @@ fn a_new_node_has_the_defaults_of_the_spec_writes_every_field_and_changes_no_pix
     assert_eq!(item["elements"]["subject"], json!({ "exposure_ev": 0.0 }));
     assert_eq!(item["strength"], json!(100.0));
     assert_eq!(item["skin_protection"], json!(true));
+    assert_eq!(item["match_brightness"], json!(0.0));
     // A default node's effective values are its stored values, at any Strength of 100.
     let e = n.effective();
     assert!(e.hue_and_elements_are_identity());
@@ -401,6 +404,38 @@ fn element_values_are_clamped_per_element_and_reported_by_field() {
     assert_eq!(node_of(&s).strength, 100.0);
     let (s, _) = with_node(json!({ "strength": -4 })).unwrap();
     assert_eq!(node_of(&s).strength, 0.0);
+    // Match brightness.
+    let (s, clamped) = with_node(json!({ "match_brightness": 140 })).unwrap();
+    assert!(reported(&clamped, SettingsField::MatchBrightness));
+    assert_eq!(node_of(&s).match_brightness, 100.0);
+    let (s, clamped) = with_node(json!({ "match_brightness": -3 })).unwrap();
+    assert!(reported(&clamped, SettingsField::MatchBrightness));
+    assert_eq!(node_of(&s).match_brightness, 0.0);
+    let (s, clamped) = with_node(json!({ "match_brightness": 40 })).unwrap();
+    assert!(!reported(&clamped, SettingsField::MatchBrightness));
+    assert_eq!(node_of(&s).match_brightness, 40.0);
+}
+
+/// A document written before Match brightness (0.2.5-beta.2) has no such field and reads 0; the node writes it back.
+#[test]
+fn a_document_without_match_brightness_reads_zero_and_the_field_round_trips() {
+    let (s, clamped) = with_node(json!({ "strength": 70 })).unwrap();
+    assert!(clamped.is_empty());
+    assert_eq!(node_of(&s).match_brightness, 0.0);
+    let (s, _) = with_node(json!({ "match_brightness": 35 })).unwrap();
+    let text = serde_json::to_string(&s).unwrap();
+    let back: DevelopSettings = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, s);
+    assert_eq!(node_of(&back).match_brightness, 35.0);
+    let v = serde_json::to_value(&s).unwrap();
+    let item = v["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == json!(2))
+        .unwrap()
+        .clone();
+    assert_eq!(item["match_brightness"], json!(35.0));
 }
 
 #[test]
@@ -410,6 +445,10 @@ fn a_number_that_is_not_finite_is_refused_and_nothing_is_applied() {
     for patch in [
         NodePatch {
             strength: Some(f64::NAN),
+            ..NodePatch::default()
+        },
+        NodePatch {
+            match_brightness: Some(f64::NAN),
             ..NodePatch::default()
         },
         NodePatch {
@@ -556,7 +595,7 @@ fn patches_change_fields_report_them_and_partials_keep_the_rest() {
             &patch_of(json!({ "nodes": { "2": {
                 "hue_curves": { "hue_vs_hue": [ { "hue_deg": 30, "value": 12 } ] },
                 "elements": { "sky": { "hue_deg": 10 }, "subject": { "exposure_ev": 0.25 } },
-                "skin_protection": false, "strength": 60 } } })),
+                "skin_protection": false, "strength": 60, "match_brightness": 55 } } })),
             None,
         )
         .unwrap();
@@ -564,6 +603,7 @@ fn patches_change_fields_report_them_and_partials_keep_the_rest() {
         SettingsField::HueCurves,
         SettingsField::Elements,
         SettingsField::SkinProtection,
+        SettingsField::MatchBrightness,
         SettingsField::Strength,
     ] {
         assert!(report.changed.contains(&FieldRef {
@@ -583,6 +623,7 @@ fn patches_change_fields_report_them_and_partials_keep_the_rest() {
     assert_eq!(n.elements.subject.exposure_ev, 0.25);
     assert!(!n.skin_protection);
     assert_eq!(n.strength, 60.0);
+    assert_eq!(n.match_brightness, 55.0);
     // A partial hue_curves: the curve given replaces that curve, the one left out stays.
     s.apply_patch(
         &patch_of(json!({ "nodes": { "2": { "hue_curves": {
@@ -767,7 +808,7 @@ fn the_fit_is_one_patch_and_one_undo_step_and_leaves_the_other_fields_alone() {
     a.apply_patch(
         &patch_of(json!({ "nodes": { "2": {
             "name": "Mine", "trim": { "exposure_ev": 0.2 }, "grade": { "contrast": 10 },
-            "strength": 70, "skin_protection": false,
+            "strength": 70, "skin_protection": false, "match_brightness": 30,
             "masks": { "items": [ { "kind": "radial" } ] } } } })),
         None,
     )
@@ -803,6 +844,7 @@ fn the_fit_is_one_patch_and_one_undo_step_and_leaves_the_other_fields_alone() {
     assert_eq!(nb.trim, na.trim);
     assert_eq!(nb.grade.contrast, na.grade.contrast);
     assert_eq!((nb.strength, nb.skin_protection), (70.0, false));
+    assert_eq!(nb.match_brightness, 30.0);
     assert_eq!(nb.masks, na.masks);
     // One undo step: the patch between the two documents takes b back to a, and forward again.
     let undo = SettingsPatch::between(&b, &a);
@@ -835,7 +877,7 @@ fn reset_puts_the_defaults_back_and_keeps_name_bypass_place_masks_and_links() {
             "trim": { "tint": 9 }, "grade": { "brightness": 7, "saturation": -20 },
             "hue_curves": { "hue_vs_hue": [ { "hue_deg": 10, "value": 5 } ] },
             "elements": { "sky": { "hue_deg": 12 }, "subject": { "exposure_ev": 0.3 } },
-            "strength": 40, "skin_protection": false,
+            "strength": 40, "skin_protection": false, "match_brightness": 80,
             "masks": { "items": [ { "kind": "radial" } ] } } } })),
         None,
     )
@@ -850,6 +892,7 @@ fn reset_puts_the_defaults_back_and_keeps_name_bypass_place_masks_and_links() {
     assert_eq!(n.hue_curves, d.hue_curves);
     assert_eq!(n.elements, d.elements);
     assert_eq!((n.strength, n.skin_protection), (100.0, true));
+    assert_eq!(n.match_brightness, 0.0);
     assert!(n.bypass);
     assert_eq!(n.name, "Sky");
     assert_eq!(n.pos, [4.0, 1.0]);
@@ -986,6 +1029,8 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
         json!({ "strength": 101 }),
         json!({ "strength": -1 }),
         json!({ "skin_protection": 1 }),
+        json!({ "match_brightness": 101 }),
+        json!({ "match_brightness": -1 }),
         json!({ "hue_curves": { "x": [] } }),
         json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 1 } ] } }),
         json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 1, "value": 181 } ] } }),
@@ -1001,6 +1046,7 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
     for body in [
         json!({}),
         json!({ "strength": 0 }),
+        json!({ "match_brightness": 100 }),
         json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 725, "value": -180 } ] } }),
         json!({ "elements": { "skin": { "hue_deg": 15 }, "subject": { "exposure_ev": -1 } } }),
     ] {
@@ -1039,6 +1085,8 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
     assert_eq!(n["kind"]["const"], json!("reference_grade"));
     assert_eq!(n["strength"]["default"], json!(100));
     assert_eq!(n["skin_protection"]["default"], json!(true));
+    assert_eq!(n["match_brightness"]["default"], json!(0));
+    assert_eq!(range(&n["match_brightness"]), MATCH_BRIGHTNESS_RANGE);
 }
 
 #[test]
@@ -1068,6 +1116,7 @@ fn the_kind_is_in_all_and_its_names_and_fields_are_the_specs() {
                 | SettingsField::Elements
                 | SettingsField::Strength
                 | SettingsField::SkinProtection
+                | SettingsField::MatchBrightness
         ) || f.is_grade();
         assert_eq!(has, want, "{f:?}");
     }
@@ -1075,6 +1124,7 @@ fn the_kind_is_in_all_and_its_names_and_fields_are_the_specs() {
         SettingsField::HueCurves,
         SettingsField::Elements,
         SettingsField::SkinProtection,
+        SettingsField::MatchBrightness,
     ] {
         assert_eq!(f.group(), Some(ym_core::settings::StageGroup::Grade));
         assert_eq!(

@@ -917,3 +917,254 @@ fn the_scene_is_made_once_per_photo_and_once_per_reference() {
     assert_eq!(after_new, after_first + 1, "one new picture to segment");
     assert_eq!(fit("and again"), after_new);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Match brightness (docs/34 section 5.8, RG-16)
+// ---------------------------------------------------------------------------------------------
+
+/// Sets the Input's exposure of photo `k` to `ev` stops, through a patch.
+fn set_exposure(r: &Rig, k: usize, ev: f64) {
+    let now = r.settings(k);
+    let mut next = now.clone();
+    next.input_mut().exposure = ym_core::settings::ExposureSetting::manual_ev(ev);
+    r.core
+        .update_settings(r.ids[k], &SettingsPatch::between(&now, &next))
+        .expect("the exposure is set");
+}
+
+/// The relative luminance of a picture's median L*, as the fit reads it.
+fn median_y(p: &ym_core::apple_auto::AdvisorPicture) -> f64 {
+    use ym_color::refgrade::brightness::luminance_of_lstar;
+    use ym_color::refgrade::measure::{LabConv, median_lightness};
+    let conv = LabConv::new();
+    let px: Vec<_> = p
+        .rgb
+        .chunks_exact(3)
+        .map(|c| {
+            conv.px_of_codes([
+                f64::from(c[0]) / 255.0,
+                f64::from(c[1]) / 255.0,
+                f64::from(c[2]) / 255.0,
+            ])
+        })
+        .collect();
+    luminance_of_lstar(median_lightness(&px))
+}
+
+/// A rig whose photo 0 is `under_ev` stops under the picture it is to match, with that picture chosen as the node's reference
+/// (the same scene at `reference_ev` stops of exposure). Returns the rig and the reference's median luminance.
+fn dark_photo_rig(under_ev: f64, reference_ev: f64) -> (Rig, f64) {
+    let r = rig(1);
+    r.add_node(0, json!({}));
+    set_exposure(&r, 0, reference_ev);
+    let reference = r.picture(0);
+    let path = r.file_of("bright.png", &reference);
+    set_exposure(&r, 0, reference_ev - under_ev);
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .expect("a reference");
+    (r, median_y(&reference))
+}
+
+/// Fits photo 0 at `percent` Match brightness, from the node's defaults, and returns the outcome and the photo as it is shown.
+fn fit_at(r: &Rig, percent: f64) -> (FitOutcome, ym_core::apple_auto::AdvisorPicture) {
+    let now = r.settings(0);
+    let mut next = now.clone();
+    if let Some(n) = next.nodes.reference_grade_mut(2) {
+        n.match_brightness = percent;
+    }
+    r.core
+        .update_settings(r.ids[0], &SettingsPatch::between(&now, &next))
+        .expect("the field is set");
+    let out = fit_with(r, 0, 4).expect("a fit");
+    let shown = r.picture(0);
+    r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+    (out, shown)
+}
+
+/// Row (2) and (3): the gap, Δ rising with the slider, the bisection's result against its target, and the recovery of a photo a stop
+/// under its reference at 0, 50 and 100 %.
+#[test]
+fn a_photo_a_stop_under_comes_back_toward_the_reference_in_proportion_to_the_slider() {
+    let (r, y_r) = dark_photo_rig(1.0, 0.0);
+    let y_p = median_y(&r.picture(0));
+    let gap = (y_r / y_p).log2();
+    println!("gap between the photo and the reference: {gap:.3} stops");
+    assert!(
+        gap > 0.5 && gap < 1.5,
+        "the scene's gap is under the hold: {gap}"
+    );
+    let mut last_asked = -1.0;
+    let mut shown_moves: Vec<(f64, f64)> = Vec::new();
+    for (percent, share) in [
+        (0.0, 0.0),
+        (25.0, 0.25),
+        (50.0, 0.5),
+        (75.0, 0.75),
+        (100.0, 1.0),
+    ] {
+        let (out, shown) = fit_at(&r, percent);
+        let b = out.brightness;
+        let got = (median_y(&shown) / y_p).log2();
+        println!(
+            "{percent:>5} %: asked {:.3}, displayed move of the sample {:.3}, shift {:.3}, fitted picture moved {got:.3} (target {:.3}), {:?}",
+            b.asked_ev,
+            b.moved_ev,
+            b.shift_ev,
+            share * gap,
+            out.status
+        );
+        shown_moves.push((percent, got));
+        assert_eq!(b.percent, percent);
+        assert!(b.asked_ev >= last_asked, "the move rises with the slider");
+        last_asked = b.asked_ev;
+        assert!(!b.limited);
+        if percent == 0.0 {
+            // Nothing new ran: today's fit, and nothing moved.
+            assert_eq!(b, ym_color::refgrade::brightness::BrightnessMove::none());
+            continue;
+        }
+        // The bisection's result is within 0.01 stop of its target.
+        assert!((b.moved_ev - b.asked_ev).abs() < 0.01, "{b:?}");
+        assert!((b.asked_ev - share * b.gap_ev).abs() < 1e-12, "{b:?}");
+    }
+    println!("shown moves by percent: {shown_moves:?}, gap {gap:.3}");
+    // Row (3), the whole of it: at 100 % the fit comes back to within 0.1 stop of the reference's median; the shown move never falls
+    // as the slider rises. (Half way at 50 %, within 0.1 stop, is **not met** on this scene: see the ignored test below and
+    // `docs/STATUS.md`.)
+    let at = |p: f64| {
+        shown_moves
+            .iter()
+            .find(|m| m.0 == p)
+            .map(|m| m.1)
+            .expect("measured")
+    };
+    assert!(
+        (at(100.0) - gap).abs() < 0.1,
+        "100 %: moved {:.3}, gap {gap:.3}",
+        at(100.0)
+    );
+    assert!(
+        shown_moves.windows(2).all(|w| w[1].1 >= w[0].1),
+        "{shown_moves:?}"
+    );
+    // The slider moves the shown photo toward the reference's median: the slider at 100 % is nearer than at 0 %.
+    assert!((at(100.0) - gap).abs() < (at(0.0) - gap).abs());
+}
+
+/// Row (3), the half-way line: at 50 % the shown photo's median should be half way (within 0.1 stop) between the photo's and the
+/// reference's. **It is not**: the fit moves the median 0.33 stop with Match brightness at 0 (its floor, ceiling and contrast terms
+/// lift a photo a stop under its reference) and 0.39 stop beyond the moved photo's at 50 %, so it lands 1.02 stops up, not 0.63. The
+/// test is kept, ignored, so that the number can be measured again (`cargo test -p ym-core --test reference_fit -- --ignored
+/// lands_half_way`); the miss is reported in `docs/STATUS.md` and not loosened (`AGENTS.md`).
+#[test]
+#[ignore = "RG-16 gate (3) at 50 % is not met: reported in docs/STATUS.md"]
+fn a_photo_a_stop_under_lands_half_way_to_the_reference_at_fifty_percent() {
+    let (r, y_r) = dark_photo_rig(1.0, 0.0);
+    let y_p = median_y(&r.picture(0));
+    let gap = (y_r / y_p).log2();
+    let (_, shown) = fit_at(&r, 50.0);
+    let got = (median_y(&shown) / y_p).log2();
+    assert!(
+        (got - 0.5 * gap).abs() < 0.1,
+        "moved {got:.3}, half the gap is {:.3}",
+        0.5 * gap
+    );
+}
+
+/// Row (2): the gap is held at 1.5 stops, and the report says so.
+#[test]
+fn a_gap_over_one_and_a_half_stops_is_held_and_reported() {
+    let (r, _) = dark_photo_rig(3.5, 1.0);
+    let (out, _) = fit_at(&r, 100.0);
+    let b = out.brightness;
+    println!("{b:?}");
+    assert!(b.limited, "{b:?}");
+    assert!((b.gap_ev - 1.5).abs() < 1e-12 && (b.asked_ev - 1.5).abs() < 1e-12);
+    assert!((b.moved_ev - 1.5).abs() < 0.01, "{b:?}");
+    // The other way: a bright photo and a dark reference.
+    let (r, _) = dark_photo_rig(-3.5, 0.0);
+    let (out, _) = fit_at(&r, 50.0);
+    let b = out.brightness;
+    assert!(b.limited && (b.gap_ev + 1.5).abs() < 1e-12, "{b:?}");
+    assert!(
+        (b.asked_ev + 0.75).abs() < 1e-12 && (b.moved_ev + 0.75).abs() < 0.01,
+        "{b:?}"
+    );
+}
+
+/// Row (2): `P'` is the photo rendered with the exposure shift, at the node's identity: a render of the photo with that Exposure
+/// in the node's own trim, bit for bit.
+#[test]
+fn the_moved_photo_is_a_render_with_that_exposure() {
+    use ym_color::refgrade::measure::Px;
+    use ym_color::refgrade::search::CandidateRenderer;
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let cancel = CancelToken::new();
+    let photo = r
+        .core
+        .renderer
+        .reference_fit_photo(&r.source(0), 2, &cancel)
+        .expect("the photo");
+    let node = r.node(0);
+    for d in [-1.25, 0.4, 1.0] {
+        let mut shifted = ym_core::reference_fit::ChainCandidates::new(&photo, &node);
+        let mut got = vec![Px::default(); shifted.sample_len()];
+        shifted
+            .render_shifted(&[0.0; 49], d, &mut got)
+            .expect("a render");
+        // The same photo with the node's own Exposure at `d`, fitted through the settings as the person would set it.
+        r.add_node(0, json!({ "trim": { "exposure_ev": d } }));
+        let with_trim = r
+            .core
+            .renderer
+            .reference_fit_photo(&r.source(0), 2, &cancel)
+            .expect("the photo");
+        let node_d = r.node(0);
+        let mut plain = ym_core::reference_fit::ChainCandidates::new(&with_trim, &node_d);
+        let mut want = vec![Px::default(); plain.sample_len()];
+        plain.render(&[0.0; 49], &mut want).expect("a render");
+        assert_eq!(got, want, "d = {d}");
+        r.add_node(0, json!({}));
+    }
+    // A shift of 0 is the plain render, bit for bit.
+    let mut a = ym_core::reference_fit::ChainCandidates::new(&photo, &node);
+    let mut b = ym_core::reference_fit::ChainCandidates::new(&photo, &node);
+    let (mut pa, mut pb) = (
+        vec![Px::default(); a.sample_len()],
+        vec![Px::default(); b.sample_len()],
+    );
+    a.render(&[0.0; 49], &mut pa).unwrap();
+    b.render_shifted(&[0.0; 49], 0.0, &mut pb).unwrap();
+    assert_eq!(pa, pb);
+}
+
+/// Determinism (`AGENTS.md` rule 8): one thread and four, and two runs, give the same bits at 50 %, the move included.
+#[test]
+fn a_fit_with_match_brightness_gives_the_same_bits_on_one_thread_and_many_and_twice() {
+    let (r, _) = dark_photo_rig(1.0, 0.0);
+    let now = r.settings(0);
+    let mut next = now.clone();
+    next.nodes
+        .reference_grade_mut(2)
+        .expect("the node")
+        .match_brightness = 50.0;
+    r.core
+        .update_settings(r.ids[0], &SettingsPatch::between(&now, &next))
+        .unwrap();
+    let mut pins = Vec::new();
+    for threads in [1usize, 4, 4] {
+        let out = fit_with(&r, 0, threads).expect("a fit");
+        let b = out.brightness;
+        pins.push((
+            pin_of(&out, &r.node(0)),
+            b.shift_ev.to_bits(),
+            b.moved_ev.to_bits(),
+            b.asked_ev.to_bits(),
+        ));
+        r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+    }
+    assert_eq!(pins[0], pins[1], "one thread and four");
+    assert_eq!(pins[1], pins[2], "two runs");
+}

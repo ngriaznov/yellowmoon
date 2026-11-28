@@ -1639,6 +1639,8 @@ pub struct ReferenceGradeNode {
     pub strength: Num,
     /// Whether the next fit keeps skin from drifting.
     pub skin_protection: bool,
+    /// 0 to 100, in percent: how far the next fit moves the photo's brightness toward the reference's.
+    pub match_brightness: Num,
     /// The masks: they limit where the whole node acts.
     pub masks: MaskSettings,
 }
@@ -2638,6 +2640,9 @@ pub struct NodePatch {
     /// A Reference Grade node's Skin protection, on or off.
     #[serde(default)]
     pub skin_protection: Option<bool>,
+    /// A Reference Grade node's new Match brightness, percent.
+    #[serde(default)]
+    pub match_brightness: Option<Num>,
     /// A Layer's new blend mode.
     #[serde(default)]
     pub mode: Option<BlendMode>,
@@ -2698,6 +2703,7 @@ impl Serialize for NodePatch {
             hue_curves,
             elements,
             skin_protection,
+            match_brightness,
         );
         if let Some(v) = &self.blur_type {
             map.serialize_entry("type", v)?;

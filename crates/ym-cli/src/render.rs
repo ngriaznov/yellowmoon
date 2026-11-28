@@ -627,6 +627,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     let reference = args.reference.as_deref().map(|file| ReferenceRun {
         file,
         strength: args.reference_strength,
+        brightness: args.reference_brightness,
         no_skin_protection: args.no_skin_protection,
         node: args.reference_node,
     });

@@ -396,6 +396,10 @@ pub struct Fixed {
     pub coverage: Coverage,
     /// The whites licence of this pair.
     pub licence: Licence,
+    /// The shares of the picture that are clipped at the top (`hi`) and crushed (`lo25`) in the photo **as it is**, the baseline of the
+    /// clip term. They are `p.hi` and `p.lo25` unless the walls read a moved photo (Match brightness, `docs/34` section 5.8), when the
+    /// clip term keeps the photo's own.
+    pub clip_base: [f64; 2],
     sector: Vec<u8>,
     p_hue: Vec<f64>,
     p_sec_logc: [f64; SECTORS],
@@ -447,6 +451,43 @@ fn pg_means(px: &[Px], pg: &[Vec<u32>]) -> Vec<[f64; 2]> {
 }
 
 impl Fixed {
+    /// [`Fixed::with_coverage`] for a fit that moves the photo's brightness (`docs/34` section 5.8): `moved_px` is the photo `P'`
+    /// with its exposure shifted, and the network and the walls read it as they would read the photo (so the key-mismatch gate, the
+    /// targets written around the photo and the walls that compare a candidate with the photo all see `P'`); **the clip term keeps
+    /// the photo `P`** (`p_px`) as its baseline, so the move may not clip more than the photo and the reference license.
+    ///
+    /// # Errors
+    ///
+    /// [`NetworkError`] when the network lacks an output the objective reads.
+    ///
+    /// # Panics
+    ///
+    /// When a picture is empty, or the two photo pictures differ in length, or a scene has another length.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_moved_photo(
+        net: &Network,
+        p_px: &[Px],
+        moved_px: &[Px],
+        scene: &PixelScene,
+        r_px: &[Px],
+        r_scene: &PixelScene,
+        skin_protection: bool,
+        coverage: Coverage,
+    ) -> Result<Self, NetworkError> {
+        assert_eq!(p_px.len(), moved_px.len(), "the photo and the moved photo");
+        let mut f = Self::with_coverage(
+            net,
+            moved_px,
+            scene,
+            r_px,
+            r_scene,
+            skin_protection,
+            coverage,
+        )?;
+        f.clip_base = clip_shares(p_px);
+        Ok(f)
+    }
+
     /// Makes the fixed part from the photo's sample at the identity (`p_px`, `scene`) and the reference's pixels (`r_px`, `r_scene`).
     ///
     /// # Errors
@@ -633,6 +674,7 @@ impl Fixed {
                 )
             })
             .collect();
+        let clip_base = [p.hi, p.lo25];
         Ok(Self {
             excl,
             p,
@@ -642,6 +684,7 @@ impl Fixed {
             skin_protection,
             coverage,
             licence,
+            clip_base,
             sector,
             p_hue,
             p_sec_logc,
@@ -713,6 +756,15 @@ pub fn content_turn_share(
         })
         .sum();
     sum / px.len() as f64
+}
+
+/// The shares of `px` that are clipped at the top and crushed, as [`measure`] counts them: `[hi, lo25]`.
+#[must_use]
+pub fn clip_shares(px: &[Px]) -> [f64; 2] {
+    let n = px.len() as f64;
+    let hi = px.iter().filter(|p| p.hi).count();
+    let lo25 = px.iter().filter(|p| p.lo25).count();
+    [hi as f64 / n, lo25 as f64 / n]
 }
 
 /// The share of a frame a grade may clip or crush: the photo's own, plus at most `extra` where the reference has more.
@@ -1048,8 +1100,8 @@ impl Terms {
 #[must_use]
 pub fn clip_term(f: &Fixed, m: &Measure) -> f64 {
     let extra = f.t.clip_extra;
-    clip_over(m.hi, clip_allowance(f.p.hi, f.r.hi, extra))
-        + clip_over(m.lo25, clip_allowance(f.p.lo25, f.r.lo25, extra))
+    clip_over(m.hi, clip_allowance(f.clip_base[0], f.r.hi, extra))
+        + clip_over(m.lo25, clip_allowance(f.clip_base[1], f.r.lo25, extra))
 }
 
 /// The terms of a candidate: the look terms of section 5.3 and the walls of section 5.4. The regulariser and the clip term are set

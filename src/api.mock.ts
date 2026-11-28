@@ -1027,6 +1027,7 @@ function clampReferenceGrade(s: ReferenceGradeItem): ReferenceGradeItem {
       subject: { exposure_ev: clamp(e.subject.exposure_ev, -1, 1) },
     },
     strength: clamp(s.strength, 0, 100),
+    match_brightness: clamp(s.match_brightness ?? 0, 0, 100),
   };
 }
 

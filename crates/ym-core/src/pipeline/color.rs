@@ -2249,11 +2249,12 @@ mod reference_plan_tests {
             json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": 1.0000001 } ] } }),
         );
         assert_ne!(a, b);
-        // The name, the place and Skin protection change no pixel and leave the key alone.
+        // The name, the place, Skin protection and Match brightness change no pixel and leave the key alone.
         for node in [
             json!({ "name": "Other" }),
             json!({ "pos": [5, 1] }),
             json!({ "skin_protection": false }),
+            json!({ "match_brightness": 60 }),
         ] {
             assert_eq!(changed(node.clone()), k0, "{node}");
         }

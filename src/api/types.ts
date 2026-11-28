@@ -848,6 +848,8 @@ export interface ReferenceGradeNode {
   strength: number;
   /** Whether the next fit keeps skin from drifting; changes no pixel by itself. */
   skin_protection: boolean;
+  /** 0 to 100, percent: how far the next fit moves the photo's brightness toward the reference's; changes no pixel by itself (`docs/34` section 5.8). */
+  match_brightness: number;
   masks: MaskSettings;
 }
 
@@ -1066,6 +1068,8 @@ export interface NodePatch {
   elements?: { [K in keyof Elements]?: Partial<Elements[K]> };
   /** A Reference Grade node's Skin protection. */
   skin_protection?: boolean;
+  /** A Reference Grade node's Match brightness, percent. */
+  match_brightness?: number;
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */

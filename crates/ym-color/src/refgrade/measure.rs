@@ -393,6 +393,18 @@ impl Ranks {
     }
 }
 
+/// The median L\* of a picture as [`measure`] reads it (`p50`): the interpolated 50 % rank. Used by Match brightness for the gap
+/// between the photo and the reference (`docs/34` section 5.8).
+///
+/// # Panics
+///
+/// When `px` is empty: a mistake of the caller.
+#[must_use]
+pub fn median_lightness(px: &[Px]) -> f64 {
+    assert!(!px.is_empty(), "a picture to measure");
+    Ranks::of(px).p50
+}
+
 /// What one pass over the pixels in order gives: the measures that need no rank, and the pixels that may count as neutral
 /// (index, C\*, a\*, b\*, in order) for the terciles' tint.
 struct Scan {

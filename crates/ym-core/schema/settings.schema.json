@@ -877,6 +877,13 @@
           "default": true,
           "description": "Whether the next fit uses the walls that keep skin from drifting. It changes no pixel by itself."
         },
+        "match_brightness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Percent: how far the next fit moves the photo's brightness toward the reference's, up to 1.5 stops (docs/34 section 5.8). It changes no pixel by itself. A document without it reads 0."
+        },
         "masks": {
           "$ref": "#/$defs/masks"
         }

@@ -12,6 +12,7 @@
 // proof of concept lays them out; an index keeps those lines next to their definitions in the spec.
 #![allow(clippy::needless_range_loop)]
 
+pub mod brightness;
 pub mod measure;
 pub mod network;
 pub mod objective;

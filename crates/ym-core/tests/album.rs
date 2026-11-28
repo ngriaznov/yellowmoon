@@ -263,7 +263,7 @@ fn ten_photos() -> (Rig, PathBuf) {
           "masks": { "invert": false, "items": [
             { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } },
         // A Reference Grade node with fitted-style numbers (RG-02): it travels in `settings` as stored.
-        { "id": 8, "kind": "reference_grade", "name": "Match", "pos": [5, 0], "strength": 80, "skin_protection": false,
+        { "id": 8, "kind": "reference_grade", "name": "Match", "pos": [5, 0], "strength": 80, "skin_protection": false, "match_brightness": 70,
           "grade": { "saturation": { "kind": "manual", "value": -12 },
                      "curve": { "luma": [[0, 0], [0.2784, 0.27], [1, 1]] } },
           "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": -4 }, { "hue_deg": 120, "value": 6 } ],
@@ -1435,6 +1435,7 @@ fn an_album_with_a_reference_grade_node_round_trips_and_an_older_build_refuses_i
         .expect("the node is in the file");
     assert_eq!(node["strength"], json!(80.0));
     assert_eq!(node["skin_protection"], json!(false));
+    assert_eq!(node["match_brightness"], json!(70.0));
     assert_eq!(node["hue_curves"]["hue_vs_hue"][1]["value"], json!(6.0));
     assert_eq!(node["elements"]["sky"]["hue_deg"], json!(8.0));
     assert_eq!(node["elements"]["subject"]["exposure_ev"], json!(0.2));

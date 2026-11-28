@@ -442,7 +442,7 @@ fn a_reference_grade_node_travels_with_the_nodes_group_and_applies_the_same_numb
                               "hue_vs_sat": [ { "hue_deg": 240, "value": 1.2 } ] },
               "elements": { "sky": { "exposure_ev": -0.3, "hue_deg": 8, "chroma": 1.1 },
                             "skin": { "hue_deg": 3 }, "subject": { "exposure_ev": 0.2 } },
-              "strength": 65, "skin_protection": false,
+              "strength": 65, "skin_protection": false, "match_brightness": 45,
               "masks": { "invert": false, "items": [
                 { "kind": "brush", "mode": "add", "strokes": [ { "size": 0.02, "points": [[0.1, 0.2], [0.3, 0.4]] } ] },
                 { "kind": "radial", "mode": "add" }
@@ -459,6 +459,7 @@ fn a_reference_grade_node_travels_with_the_nodes_group_and_applies_the_same_numb
     let node = want.nodes.reference_grade(2).expect("the node");
     assert_eq!(node.strength, 65.0);
     assert!(!node.skin_protection);
+    assert_eq!(node.match_brightness, 45.0);
     assert_eq!(node.masks.items.len(), 2, "the rows stay");
     // The group's own table has nothing for it: it is carried whole with the other nodes.
     assert!(

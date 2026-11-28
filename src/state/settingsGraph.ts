@@ -268,7 +268,7 @@ export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "s
 /** The fields of a Colour Uniform node a patch may set (`docs/32` section 5.3). */
 export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "trim" | "grade" | "masks">;
 /** The fields of a Reference Grade node a patch may set (`docs/34` section 3.5). */
-export type ReferenceGradePatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "hue_curves" | "elements" | "strength" | "skin_protection" | "masks">;
+export type ReferenceGradePatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "hue_curves" | "elements" | "strength" | "skin_protection" | "match_brightness" | "masks">;
 /** The fields of a Blur node a patch may set (`docs/33` section 5.3). */
 export type BlurPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "type" | "soft" | "lens" | "motion" | "zoom" | "respect_mask_edges" | "masks">;
 /** The fields of a Film node a patch may set. */
@@ -494,6 +494,7 @@ export function newReferenceGrade(id: number, pos: NodePos, name = REFERENCE_GRA
     },
     strength: 100,
     skin_protection: true,
+    match_brightness: 0,
     masks: { invert: false, items: [] },
   };
 }

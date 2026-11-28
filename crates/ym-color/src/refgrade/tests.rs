@@ -1476,3 +1476,239 @@ fn the_whites_guard_starts_at_one_percent_of_the_frame_on_the_analysis_picture()
     assert_eq!(off.t.hl_cmax, off.net_values.get("T.hl_cmax"));
     assert_eq!(on.t.hl_cmax, on.licence.cap);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Match brightness (docs/34 section 5.8, RG-16)
+// ---------------------------------------------------------------------------------------------
+
+use super::brightness::{
+    BISECTION_STEPS, GAP_HOLD_EV, Gap, SHIFT_RANGE_EV, asked_ev, luminance_of_lstar, solve_shift,
+};
+use super::objective::clip_shares;
+
+#[test]
+fn luminance_is_cielabs_inverse_with_lstar_held_at_one() {
+    assert!((luminance_of_lstar(100.0) - 1.0).abs() < 1e-12);
+    // L* 50 is Y 0.1842...
+    assert!((luminance_of_lstar(50.0) - 0.184_187).abs() < 1e-5);
+    // The linear toe: below L* 8 it is L* over kappa.
+    assert!((luminance_of_lstar(4.0) - 4.0 * 27.0 / 24389.0).abs() < 1e-12);
+    // Held at 1 and at 100: black has a luminance, so a ratio is a number.
+    assert_eq!(luminance_of_lstar(0.0), luminance_of_lstar(1.0));
+    assert_eq!(luminance_of_lstar(-5.0), luminance_of_lstar(1.0));
+    assert_eq!(luminance_of_lstar(120.0), 1.0);
+    // The inverse of the forward function the fit measures with.
+    for l in [10.0, 25.0, 40.0, 61.0, 83.0] {
+        let y = luminance_of_lstar(l);
+        let back = 116.0 * y.cbrt() - 16.0;
+        assert!((back - l).abs() < 1e-9, "{l}");
+    }
+}
+
+#[test]
+fn the_gap_is_held_at_one_and_a_half_stops_and_the_move_is_a_share_of_it() {
+    // One stop brighter in the reference: a gap of 1 stop, not held.
+    let photo_l = 116.0 * 0.1f64.cbrt() - 16.0;
+    let ref_l = 116.0 * 0.2f64.cbrt() - 16.0;
+    let g = Gap::of_lstar(photo_l, ref_l);
+    assert!((g.raw_ev - 1.0).abs() < 1e-9 && !g.limited);
+    assert_eq!(g.held_ev, g.raw_ev);
+    // Three stops brighter: held at +1.5; and darker: -1.5.
+    let ref_l = 116.0 * 0.8f64.cbrt() - 16.0;
+    let g = Gap::of_lstar(photo_l, ref_l);
+    assert!((g.raw_ev - 3.0).abs() < 1e-9);
+    assert!(g.limited && g.held_ev == GAP_HOLD_EV);
+    let g = Gap::of_lstar(ref_l, photo_l);
+    assert!(g.limited && g.held_ev == -GAP_HOLD_EV);
+    // The move asked for is b * g: 0 at 0, half at 50, all at 100 and monotone in between.
+    assert_eq!(asked_ev(0.0, &g), 0.0);
+    assert_eq!(asked_ev(100.0, &g), -GAP_HOLD_EV);
+    assert!((asked_ev(50.0, &g) + 0.75).abs() < 1e-12);
+    let up = Gap::of_lstar(photo_l, ref_l);
+    let mut last = -1.0;
+    for pct in 0..=100 {
+        let a = asked_ev(f64::from(pct), &up);
+        assert!(a >= last, "monotone at {pct}");
+        last = a;
+    }
+    // A value outside 0 to 100 is held to it.
+    assert_eq!(asked_ev(250.0, &up), up.held_ev);
+    assert_eq!(asked_ev(-5.0, &up), 0.0);
+}
+
+/// A toy display: the photo's linear luminances, scaled by `2^d` and rolled off like a tone curve (so the *displayed* move is less
+/// than the exposure shift: 0.7 stop for each stop).
+fn displayed_median_y(ys: &[f64], d: f64) -> f64 {
+    let mut v: Vec<f64> = ys
+        .iter()
+        .map(|&y| {
+            let t = y * d.exp2();
+            t.powf(0.7)
+        })
+        .collect();
+    v.sort_unstable_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+#[test]
+fn the_bisection_lands_within_a_hundredth_of_a_stop_of_its_target() {
+    let ys: Vec<f64> = (0..2001)
+        .map(|i| 0.002 + 0.7 * f64::from(i) / 2000.0)
+        .collect();
+    let y0 = displayed_median_y(&ys, 0.0);
+    let mut calls = 0usize;
+    for ev in [-1.25, -1.0, -0.4, -0.1, 0.2, 0.75, 1.0, 1.25] {
+        let target = y0 * f64::exp2(ev);
+        let d = solve_shift::<()>(target, |d| {
+            calls += 1;
+            Ok(displayed_median_y(&ys, d))
+        })
+        .unwrap();
+        assert!((SHIFT_RANGE_EV.0..=SHIFT_RANGE_EV.1).contains(&d));
+        let got = (displayed_median_y(&ys, d) / y0).log2();
+        assert!(
+            (got - ev).abs() < 0.01,
+            "asked {ev}, moved {got} with shift {d}"
+        );
+    }
+    assert_eq!(calls, 8 * BISECTION_STEPS, "16 renders for each");
+    // The same closure gives the same shift, bit for bit.
+    let run = || {
+        solve_shift::<()>(y0 * 0.6, |d| Ok(displayed_median_y(&ys, d)))
+            .unwrap()
+            .to_bits()
+    };
+    assert_eq!(run(), run());
+    // A target no shift reaches takes the nearer end.
+    let top = solve_shift::<()>(10.0, |d| Ok(displayed_median_y(&ys, d))).unwrap();
+    assert_eq!(top, SHIFT_RANGE_EV.1);
+    let bottom = solve_shift::<()>(0.0, |d| Ok(displayed_median_y(&ys, d))).unwrap();
+    assert_eq!(bottom, SHIFT_RANGE_EV.0);
+    // An error of the closure ends the search.
+    let mut n = 0;
+    let e = solve_shift(1.0, |_| {
+        n += 1;
+        if n == 3 { Err("cancelled") } else { Ok(0.0) }
+    })
+    .unwrap_err();
+    assert_eq!((e, n), ("cancelled", 3));
+}
+
+/// The photo lifted by `by` L* points (a pure brightness move that clips nothing).
+fn lifted(px: &[Px], by: f64) -> Vec<Px> {
+    px.iter()
+        .map(|q| {
+            Px::new(
+                [(q.lab[0] + by).min(100.0), q.lab[1], q.lab[2]],
+                q.ok,
+                false,
+                false,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn moving_the_photo_costs_the_walls_nothing_and_a_moved_photo_that_is_the_photo_is_todays_fixed_part()
+ {
+    let pr = pair();
+    let coverage = Coverage::of_sample(&pr.p_px, &pr.scene);
+    // P' = P: the same fixed part as today's, field for field.
+    let today = Fixed::with_coverage(
+        &shipped(),
+        &pr.p_px,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        true,
+        coverage,
+    )
+    .unwrap();
+    let same = Fixed::with_moved_photo(
+        &shipped(),
+        &pr.p_px,
+        &pr.p_px,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        true,
+        coverage,
+    )
+    .unwrap();
+    assert_eq!(format!("{today:?}"), format!("{same:?}"));
+    assert_eq!(today.clip_base, [today.p.hi, today.p.lo25]);
+    // P' = a pure exposure move (every pixel lifted, nothing clipped). The walls read P', so the moved photo itself costs them nothing.
+    let moved = lifted(&pr.p_px, 6.0);
+    let f = Fixed::with_moved_photo(
+        &shipped(),
+        &pr.p_px,
+        &moved,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        true,
+        coverage,
+    )
+    .unwrap();
+    assert!(
+        (f.p.p50 - today.p.p50 - 6.0).abs() < 1.0,
+        "the network reads P''s median"
+    );
+    let c = candidate_measure(&moved, &pr.scene, &f);
+    let t = terms(&c, &f);
+    let walls = [
+        t.guard_skin_drift,
+        t.guard_skin_chroma,
+        t.guard_white_direction,
+    ];
+    assert!(walls.iter().all(|&w| w == 0.0), "{:?}", t.named());
+    assert_eq!(clip_term(&f, &c.m), 0.0);
+    // The same candidate against the fixed part made from P, which would count the move as harm somewhere, is no better: the walls
+    // of the moved fixed part are never above them.
+    let c0 = candidate_measure(&moved, &pr.scene, &today);
+    let t0 = terms(&c0, &today);
+    assert!(t.walls_and_clip() <= t0.walls_and_clip() + 1e-12);
+}
+
+#[test]
+fn the_clip_term_keeps_the_photo_as_its_baseline() {
+    let pr = pair();
+    let coverage = Coverage::of_sample(&pr.p_px, &pr.scene);
+    // P' clips a fifth of the frame at the top; P clips nothing.
+    let mut moved = lifted(&pr.p_px, 4.0);
+    for q in moved.iter_mut().take(200) {
+        q.hi = true;
+    }
+    assert_eq!(clip_shares(&pr.p_px), [0.0, 0.0]);
+    let [moved_hi, _] = clip_shares(&moved);
+    assert!(moved_hi > 0.19);
+    // With the baseline made from P the clip term counts the clipping of a candidate that is P'.
+    let f = Fixed::with_moved_photo(
+        &shipped(),
+        &pr.p_px,
+        &moved,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        true,
+        coverage,
+    )
+    .unwrap();
+    assert_eq!(f.clip_base, [0.0, 0.0]);
+    let c = candidate_measure(&moved, &pr.scene, &f);
+    let counted = clip_term(&f, &c.m);
+    assert!(counted > 1.0, "the clip term reads P: {counted}");
+    // Were the baseline P''s own (as the walls' are), the same candidate would clip nothing more than it.
+    let own = Fixed::with_coverage(
+        &shipped(),
+        &moved,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        true,
+        coverage,
+    )
+    .unwrap();
+    let c2 = candidate_measure(&moved, &pr.scene, &own);
+    assert_eq!(clip_term(&own, &c2.m), 0.0);
+}

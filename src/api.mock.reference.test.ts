@@ -37,6 +37,18 @@ const rejection = async (promise: Promise<unknown>): Promise<AppError> => {
 };
 const node = async (): Promise<ReferenceGradeItem> => nodeOf((await api.getSettings(1)).settings, 2) as ReferenceGradeItem;
 
+describe("Match brightness", () => {
+  it("is a stored field that starts at 0 and is held to 0 to 100 like the core", async () => {
+    expect((await node()).match_brightness).toBe(0);
+    await api.updateSettings(1, { nodes: { "2": { match_brightness: 140 } } });
+    expect((await node()).match_brightness).toBe(100);
+    await api.updateSettings(1, { nodes: { "2": { match_brightness: -5 } } });
+    expect((await node()).match_brightness).toBe(0);
+    await api.updateSettings(1, { nodes: { "2": { match_brightness: 35 } } });
+    expect((await node()).match_brightness).toBe(35);
+  });
+});
+
 describe("choosing a reference", () => {
   it("holds a file for the node and answers its label, notes and a picture; the settings do not name it", async () => {
     api.queueChoice("reference", "~/Pictures/harbour-dusk.jpg");
@@ -104,7 +116,7 @@ describe("the fit", () => {
     expect(after.elements.water).toEqual({ exposure_ev: 0, hue_deg: 0, chroma: 1 });
     expect(after.grade.saturation).toEqual({ kind: "manual", value: -12 });
     // What the fit does not write stays: the name, Strength, Skin protection, the trim and the masks.
-    expect([after.name, after.strength, after.skin_protection, after.trim, after.masks]).toEqual([before.name, before.strength, before.skin_protection, before.trim, before.masks]);
+    expect([after.name, after.strength, after.skin_protection, after.match_brightness, after.trim, after.masks]).toEqual([before.name, before.strength, before.skin_protection, before.match_brightness, before.trim, before.masks]);
     expect((await api.getSettings(1)).settings).toEqual(report.settings.settings);
   });
 

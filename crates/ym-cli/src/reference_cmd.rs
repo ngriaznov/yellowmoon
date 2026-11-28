@@ -31,6 +31,8 @@ pub struct ReferenceRun<'a> {
     pub file: &'a Path,
     /// `--reference-strength`, in percent.
     pub strength: Option<f64>,
+    /// `--reference-brightness`, in percent.
+    pub brightness: Option<f64>,
     /// `--no-skin-protection`.
     pub no_skin_protection: bool,
     /// `--reference-node`.
@@ -159,6 +161,9 @@ pub fn fit_photo(
         if let Some(strength) = run.strength {
             n.strength = strength;
         }
+        if let Some(brightness) = run.brightness {
+            n.match_brightness = brightness;
+        }
         if run.no_skin_protection {
             n.skin_protection = false;
         }
@@ -229,6 +234,11 @@ pub fn fit_photo(
         "strength": applied.as_ref().map_or(Value::Null, |n| number(n.strength)),
         "skin_protection": applied.as_ref().map(|n| n.skin_protection),
         "skin_found": outcome.skin_found,
+        "brightness": {
+            "percent": applied.as_ref().map_or(Value::Null, |n| number(n.match_brightness)),
+            "moved_ev": number(outcome.brightness.moved_ev),
+            "limited": outcome.brightness.limited,
+        },
         "start": start,
         "elements": found_json(&outcome),
         "candidates": result.evals,

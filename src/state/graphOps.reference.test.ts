@@ -113,6 +113,7 @@ describe("Reset on a Reference Grade node", () => {
       elements: { sky: { exposure_ev: -0.4, hue_deg: 10, chroma: 1.2 }, subject: { exposure_ev: 0.3 } },
       strength: 40,
       skin_protection: false,
+      match_brightness: 70,
       masks: { invert: true, items: [mask] },
     });
     const after = applyPatch(before, sent(resetNode(before, 2)));
@@ -121,7 +122,7 @@ describe("Reset on a Reference Grade node", () => {
     expect(node.hue_curves).toEqual({ hue_vs_hue: [], hue_vs_sat: [] });
     expect(node.elements.sky).toEqual({ exposure_ev: 0, hue_deg: 0, chroma: 1 });
     expect(node.elements.subject).toEqual({ exposure_ev: 0 });
-    expect([node.strength, node.skin_protection]).toEqual([100, true]);
+    expect([node.strength, node.skin_protection, node.match_brightness]).toEqual([100, true, 0]);
     expect(node.masks.items).toHaveLength(1);
     expect(node.masks.invert).toBe(true);
     expect([node.name, node.bypass]).toEqual(["Dusk", true]);
