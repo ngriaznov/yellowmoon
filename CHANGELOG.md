@@ -9,11 +9,29 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.5-beta.2] - 2026-11-28
+
+A second pre-release (a beta) of 0.2.5 for testing. It adds the **Reference Grade** node, and it has everything of 0.2.5-beta.1. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.17.0 (0.2.5-beta.1 had 0.16.1): a photo without a Reference Grade node comes out with the same pixels as in 0.2.5-beta.1. A settings file, preset or album that has a Reference Grade node needs this version: an older build refuses it.
+
 ### Added
 
-- **Reference Grade, the node's format (not in the app yet).** A settings file can hold a `reference_grade` node: a corrector's trims and grade, two hue curves, seven element grades, a Strength and a Skin protection switch (`docs/34`). The hue curves run on the CPU and restore each pixel's brightness; the graphics card hands a node that uses either to the CPU. A node at its defaults changes no picture. An older Yellowmoon refuses a file that has the node. The pipeline version is 0.17.0.
-- **Reference Grade, the element masks (not in the app yet).** The element grades now act: a scene model (the segmenter EoMT small and MediaPipe's skin network, both in our own Rust code) finds sky, vegetation, water, ground, built surfaces, skin and the subject in the photo, once per photo and in memory only, and each element's grade is applied through a soft mask that follows the picture's edges (`docs/34` §4a.3). `ym` and the app write the same bytes. A copy without the scene weights draws the node without its elements, says so, and refuses to export ("This copy of Yellowmoon has no scene model, so the Elements of a Reference Grade node can't be made. Reinstall the app."). The graphics card still hands a live node to the CPU.
-- **Reference Grade, reading references (not in the app yet).** The core can now read a reference picture: a JPEG, PNG or TIFF file of 8 or 16 bits, in colour or grey, or a photo of the filmstrip as it looks with its own settings. It turns the picture upright by its EXIF orientation, converts it to sRGB from the colour profile it carries (matrix and curve profiles of any display, `cICP` and `sRGB` tags too; a picture with no profile is taken as sRGB, and one whose profile it cannot read is taken as sRGB with a note), takes off black bars (a dark night sky is not a bar), refuses a picture under 256 pixels on its short side, and reduces it in linear light to the two pictures the fit and the scene model read. HEIC, raw files and other formats are refused with a plain sentence. The reference is held in memory for the session and is never written anywhere (`docs/34` section 6).
+- **Reference Grade.** **Add node › Reference Grade** gives your photo the look of a picture you like. On the node's **Reference** tab, choose a picture file (JPEG, PNG or TIFF, 8 or 16 bits) or one of your photos from the filmstrip, as it looks with its own settings, then press **Fit**. The fit shows its progress, stops with Cancel or Esc, and is one step to undo. **Strength** (0 to 100 %) scales the result without fitting again.
+  - The fit sets the node's **Light**, **Colour** and **Curve** tabs, two hue curves on the **Hue** tab (hue against hue and saturation against hue) and a grade for each of seven parts of the photo on the **Elements** tab: sky, vegetation, water, ground, built surfaces, skin and the subject. A scene model finds those parts once per photo, in memory only; the eye on each Elements card shows that part's mask on the photo, and a part the photo does not have says "Not found in this photo."
+  - **Skin protection** (on for a new node) keeps skin close to its own colour: skin under coloured light stays as it was shot. White surfaces also stay close to their own colour; a reference whose own whites are creamy may warm them a little.
+  - Every tab can be changed by hand after a fit. The line under Fit says what the last fit did and when something has changed since.
+  - The reference is held for the session and never saved. HEIC and raw files are refused with a plain sentence, and a picture with black bars has them taken off.
+  - `ym render --reference <file>` fits the same way and writes the same bytes as the app (`--reference-strength`, `--no-skin-protection`, `--reference-node`; `docs/10`).
+
+### Known limits
+
+- Reference Grade has not been checked on a Mac yet: how long a fit takes there, the node on the graphics card, the file dialog and the panel in a window. On a Linux machine with 4 cores a fit takes about 10 seconds.
+- The node copies the look of the whole picture and of the seven parts. A vignette, a graded sky gradient or a look that differs between the two halves of the frame is not copied.
+- Film, Blur and Face Refinement nodes are not run during a fit; the card says so when one comes after the node.
+- The known limits of 0.2.4 still apply (see its section below).
+
+### Credits
+
+- The parts of the photo are found by **EoMT**, the Encoder-only Mask Transformer (its small panoptic checkpoint; Copyright (c) 2025 Mobile Perception Systems Lab at TU/e), under the MIT licence: [github.com/tue-mps/eomt](https://github.com/tue-mps/eomt). Yellowmoon bundles its weights converted to safetensors and runs them with its own code; skin comes from MediaPipe's Selfie Multiclass network, credited in 0.2.4. The notice is item 15 of `NOTICE`, which ships in the app, and the model card is `data/models/eomt/MODEL_CARD.md`.
 
 ## [0.2.5-beta.1] - 2026-11-27
 
